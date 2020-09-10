@@ -1,0 +1,52 @@
+plugins {
+    id 'java-library'
+    id 'org.springframework.boot' version '2.2.4.RELEASE'
+    id "io.spring.dependency-management" version "1.0.8.RELEASE"
+    id "io.freefair.lombok" version "5.2.1"
+    id 'maven-publish'
+}
+
+group 'com.variocube'
+version '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+bootJar {
+    enabled = false
+}
+
+jar {
+    enabled = true
+}
+
+dependencies {
+    implementation group: 'org.springframework.boot', name: 'spring-boot-starter'
+    implementation group: 'org.springframework.boot', name: 'spring-boot-starter-websocket'
+    implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-web'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
+    testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
+    testRuntime group: 'org.springframework.boot', name: 'spring-boot-devtools'
+    annotationProcessor group: 'org.springframework.boot', name: 'spring-boot-configuration-processor'
+}
+
+lombok.config['lombok.anyConstructor.addConstructorProperties'] = "true"
+
+task sourcesJar(type: Jar) {
+    from sourceSets.main.allJava
+    archiveClassifier = 'sources'
+}
+
+task javadocJar(type: Jar) {
+    from javadoc
+    archiveClassifier = 'javadoc'
+}
+
+test {
+    testLogging {
+        showStandardStreams = true
+    }
+}
