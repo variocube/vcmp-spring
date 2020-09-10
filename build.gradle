@@ -7,7 +7,7 @@ plugins {
 }
 
 group 'com.variocube'
-version '1.0.0'
+version '1.0.0-alpha1'
 
 repositories {
     mavenCentral()
@@ -43,6 +43,25 @@ task sourcesJar(type: Jar) {
 task javadocJar(type: Jar) {
     from javadoc
     archiveClassifier = 'javadoc'
+}
+
+publishing {
+    repositories {
+        maven {
+            url = "https://maven.pkg.github.com/variocube/vcmp-spring"
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifact sourcesJar
+            artifact javadocJar
+        }
+    }
 }
 
 test {
