@@ -7,7 +7,7 @@ plugins {
 }
 
 group 'com.variocube'
-version '1.0.0-alpha2'
+version '1.0.0-alpha3'
 
 repositories {
     mavenCentral()
@@ -22,11 +22,11 @@ jar {
 }
 
 dependencies {
-    implementation group: 'org.springframework.boot', name: 'spring-boot-starter'
-    implementation group: 'org.springframework.boot', name: 'spring-boot-starter-websocket'
-    implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-web'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket'
+    api group: 'com.fasterxml.jackson.core', name: 'jackson-databind'
     testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-web'
     testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
     testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
     testRuntime group: 'org.springframework.boot', name: 'spring-boot-devtools'
