@@ -1,13 +1,13 @@
 plugins {
     id 'java-library'
-    id 'org.springframework.boot' version '2.2.4.RELEASE'
-    id "io.spring.dependency-management" version "1.0.8.RELEASE"
+    id 'org.springframework.boot' version '2.3.3.RELEASE'
+    id "io.spring.dependency-management" version "1.0.10.RELEASE"
     id "io.freefair.lombok" version "5.2.1"
     id 'maven-publish'
 }
 
 group 'com.variocube'
-version '1.0.0'
+version '1.0.2'
 
 repositories {
     mavenCentral()
@@ -56,7 +56,15 @@ publishing {
     }
     publications {
         mavenJava(MavenPublication) {
-            artifact jar
+            from components.java
+            versionMapping {
+                usage('java-api') {
+                    fromResolutionOf('runtimeClasspath')
+                }
+                usage('java-runtime') {
+                    fromResolutionResult()
+                }
+            }
             artifact sourcesJar
             artifact javadocJar
         }
