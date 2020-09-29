@@ -3,6 +3,7 @@ package com.variocube.vcmp;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.Value;
+import lombok.var;
 import org.springframework.util.Base64Utils;
 
 import java.security.SecureRandom;
@@ -80,5 +81,23 @@ class VcmpFrame {
         String id = Base64Utils.encodeToUrlSafeString(randomBytes);
         assert id.length() == ID_LENGTH;
         return id;
+    }
+
+    @Override
+    public String toString() {
+        return "VcmpFrame(" + contentsToString() + ")";
+    }
+
+    private String contentsToString() {
+        if (type == Type.HBT) {
+            return "HBT " + heartbeatInterval + "ms";
+        }
+        else {
+            var contents = type.name() + "#" + id;
+            if (payload != null) {
+                contents += ":" + (payload.length() > 36 ? payload.substring(0, 36) + "..." : payload);
+            }
+            return contents;
+        }
     }
 }

@@ -9,10 +9,8 @@ import java.io.IOException;
 @VcmpEndpoint(path="/size")
 public class SizeEndpoint {
 
-    byte[] data = new byte[0];
-
     @VcmpListener
     public void handlePotentiallyHugeMessage(PotentiallyHugeMessage potentiallyHugeMessage, VcmpSession session) throws IOException {
-        this.data = potentiallyHugeMessage.getData();
+        session.send(potentiallyHugeMessage);
     }
 }

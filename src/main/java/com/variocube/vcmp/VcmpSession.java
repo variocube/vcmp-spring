@@ -1,15 +1,13 @@
 package com.variocube.vcmp;
 
-import lombok.AccessLevel;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.Synchronized;
+import lombok.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import javax.websocket.CloseReason;
 import java.io.IOException;
 import java.net.URI;
 import java.security.Principal;
@@ -125,30 +123,37 @@ public class VcmpSession {
         }
     }
 
-    void sendFrame(VcmpFrame frame) throws IOException {
-        sendMessage(new TextMessage(frame.serialize()));
-    }
-
     /**
-     * Sends a websocket message on the underlying WebSocketSession.
+     * Sends a VCMP frame on the underlying WebSocketSession.
      * This method must be synchronized to avoid sending on multiple
      * threads concurrently.
-     * @param message The message to send
+     * @param frame The frame to send
      * @throws IOException If an error occurred while sending
      */
     @Synchronized
-    private void sendMessage(WebSocketMessage<?> message) throws IOException {
+    void sendFrame(VcmpFrame frame) throws IOException {
         if (this.webSocketSession.isOpen()) {
             if (log.isTraceEnabled()) {
-                log.trace("Sending message {}", message);
+                log.trace("Sending frame {}", frame);
             }
-            this.webSocketSession.sendMessage(message);
+
+            val it = new StringChunkIterator(frame.serialize(), webSocketSession.getTextMessageSizeLimit());
+            while (it.hasNext()) {
+                try {
+                    this.webSocketSession.sendMessage(new TextMessage(it.next(), !it.hasNext()));
+                }
+                catch (Exception e) {
+                    log.warn("Error while sending web socket message", e);
+                    this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
+                    throw e;
+                }
+            }
         }
         else {
             throw new IOException("Session already closed.");
         }
-    }
 
+    }
 
     public String getUsername() {
         return getPrincipalName()

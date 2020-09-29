@@ -5,7 +5,6 @@ import com.variocube.vcmp.VcmpHandler;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.tomcat.websocket.Constants;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.lang.Nullable;
 import org.springframework.scheduling.TaskScheduler;
@@ -28,10 +27,30 @@ import java.util.Collections;
 @Slf4j
 public class VcmpConnectionManager implements Closeable {
 
-    public static final long DEFAULT_RECONNECT_TIMEOUT = 10 * 1000; // 10 seconds
-    public static final long ASYNC_SEND_TIMEOUT = 2 * 1000; // 2 seconds
-    public static final long SYNC_SEND_TIMEOUT = 2 * 1000; // 2 seconds
-    public static final long MAX_SESSION_IDLE_TIMEOUT = 60 * 1000; // 60 seconds
+    /*
+     * NOTE: The `ASYNC_SEND_TIMEOUT` and the `MAX_TEXT_MESSAGE_BUFFER_SIZE` specify
+     * the minimum required bandwidth for a functioning connection.
+     * Web socket messages are split into frames of `MAX_TEXT_MESSAGE_BUFFER_SIZE`
+     * and each of these frames must be sent within `ASYNC_SEND_TIMEOUT`. Otherwise
+     * an exception will be thrown when sending a message.
+     */
+    /**
+     * Send timeout for a message part (web socket frame) in seconds.
+     */
+    private static final long ASYNC_SEND_TIMEOUT = 2 * 1000; // 2 seconds
+
+    /**
+     * Buffer size for text messages.
+     */
+    private static final int MAX_TEXT_MESSAGE_BUFFER_SIZE = 16 * 1024; // 16 KB
+
+
+    /**
+     * Default timeout before reconnecting after the connection was closed.
+     */
+    static final long DEFAULT_RECONNECT_TIMEOUT = 10 * 1000; // 10 seconds
+
+    private static final long MAX_SESSION_IDLE_TIMEOUT = 60 * 1000; // 60 seconds
 
     private final StandardWebSocketClient webSocketClient;
     private final WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
@@ -63,9 +82,9 @@ public class VcmpConnectionManager implements Closeable {
 
         WebSocketContainer webSocketContainer = ContainerProvider.getWebSocketContainer();
         webSocketContainer.setAsyncSendTimeout(ASYNC_SEND_TIMEOUT);
+        webSocketContainer.setDefaultMaxTextMessageBufferSize(MAX_TEXT_MESSAGE_BUFFER_SIZE);
         webSocketContainer.setDefaultMaxSessionIdleTimeout(MAX_SESSION_IDLE_TIMEOUT);
         this.webSocketClient  = new StandardWebSocketClient(webSocketContainer);
-        this.webSocketClient.setUserProperties(Collections.singletonMap(Constants.BLOCKING_SEND_TIMEOUT_PROPERTY, SYNC_SEND_TIMEOUT));
 
         try {
             MethodAnnotationUtils.invokeMethodWithAnnotation(target, VcmpHttpHeaders.class, headers);
