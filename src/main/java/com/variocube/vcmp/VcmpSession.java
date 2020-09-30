@@ -15,16 +15,29 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
 @Slf4j
 public class VcmpSession {
+
+    /**
+     * The timeout to wait for acquiring the send lock in seconds.
+     *
+     * This needs to account for sending big messages on slow networks.
+     * However, it should be small enough that we see frames rejected because
+     * another sender holds the lock too long.
+     */
+    private final static int SEND_LOCK_TIMEOUT = 30;
+
     private final WebSocketSession webSocketSession;
     private final VcmpHandler vcmpHandler;
     private final TaskScheduler taskScheduler;
 
     private final ConcurrentHashMap<String, VcmpCallback> callbacks = new ConcurrentHashMap<>();
+    private final ReentrantLock sendLock = new ReentrantLock();
 
     private Instant lastHeartbeatReceived;
 
@@ -130,29 +143,38 @@ public class VcmpSession {
      * @param frame The frame to send
      * @throws IOException If an error occurred while sending
      */
-    @Synchronized
     void sendFrame(VcmpFrame frame) throws IOException {
         if (this.webSocketSession.isOpen()) {
-            if (log.isTraceEnabled()) {
-                log.trace("Sending frame {}", frame);
-            }
+            log.trace("Sending frame {}", frame);
 
             val it = new StringChunkIterator(frame.serialize(), webSocketSession.getTextMessageSizeLimit());
-            while (it.hasNext()) {
-                try {
-                    this.webSocketSession.sendMessage(new TextMessage(it.next(), !it.hasNext()));
+            try {
+                if (!sendLock.tryLock(SEND_LOCK_TIMEOUT, TimeUnit.SECONDS)) {
+                    throw new Exception("Could not acquire send lock.");
                 }
-                catch (Exception e) {
-                    log.warn("Error while sending web socket message", e);
-                    this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
-                    throw e;
+                log.trace("Acquired send lock. Start sending chunks...");
+                while (it.hasNext()) {
+                    val message = new TextMessage(it.next(), !it.hasNext());
+                    log.trace("Sending chunk {}", message);
+                    this.webSocketSession.sendMessage(message);
                 }
             }
+            catch (Exception e) {
+                log.warn("Error while sending web socket message", e);
+                this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
+                throw new IOException("Error while sending web socket message", e);
+            }
+            finally {
+                if (sendLock.isHeldByCurrentThread()) {
+                    sendLock.unlock();
+                }
+            }
+
+            log.trace("Finished sending frame {}", frame);
         }
         else {
             throw new IOException("Session already closed.");
         }
-
     }
 
     public String getUsername() {

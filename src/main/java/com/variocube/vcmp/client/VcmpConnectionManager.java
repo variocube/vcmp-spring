@@ -5,6 +5,8 @@ import com.variocube.vcmp.VcmpHandler;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.tomcat.websocket.Constants;
+import org.apache.tomcat.websocket.WsWebSocketContainer;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.lang.Nullable;
 import org.springframework.scheduling.TaskScheduler;
@@ -28,16 +30,16 @@ import java.util.Collections;
 public class VcmpConnectionManager implements Closeable {
 
     /*
-     * NOTE: The `ASYNC_SEND_TIMEOUT` and the `MAX_TEXT_MESSAGE_BUFFER_SIZE` specify
+     * NOTE: The `SEND_TIMEOUT` and the `MAX_TEXT_MESSAGE_BUFFER_SIZE` specify
      * the minimum required bandwidth for a functioning connection.
      * Web socket messages are split into frames of `MAX_TEXT_MESSAGE_BUFFER_SIZE`
-     * and each of these frames must be sent within `ASYNC_SEND_TIMEOUT`. Otherwise
+     * and each of these frames must be sent within `SEND_TIMEOUT`. Otherwise
      * an exception will be thrown when sending a message.
      */
     /**
      * Send timeout for a message part (web socket frame) in seconds.
      */
-    private static final long ASYNC_SEND_TIMEOUT = 2 * 1000; // 2 seconds
+    private static final long SEND_TIMEOUT = 2 * 1000; // 2 seconds
 
     /**
      * Buffer size for text messages.
@@ -80,11 +82,11 @@ public class VcmpConnectionManager implements Closeable {
 
         this.headers.put(WebSocketHttpHeaders.SEC_WEBSOCKET_EXTENSIONS, Collections.singletonList("permessage-deflate"));
 
-        WebSocketContainer webSocketContainer = ContainerProvider.getWebSocketContainer();
-        webSocketContainer.setAsyncSendTimeout(ASYNC_SEND_TIMEOUT);
+        WebSocketContainer webSocketContainer = new WsWebSocketContainer();
         webSocketContainer.setDefaultMaxTextMessageBufferSize(MAX_TEXT_MESSAGE_BUFFER_SIZE);
         webSocketContainer.setDefaultMaxSessionIdleTimeout(MAX_SESSION_IDLE_TIMEOUT);
         this.webSocketClient  = new StandardWebSocketClient(webSocketContainer);
+        this.webSocketClient.setUserProperties(Collections.singletonMap(Constants.BLOCKING_SEND_TIMEOUT_PROPERTY, SEND_TIMEOUT));
 
         try {
             MethodAnnotationUtils.invokeMethodWithAnnotation(target, VcmpHttpHeaders.class, headers);
