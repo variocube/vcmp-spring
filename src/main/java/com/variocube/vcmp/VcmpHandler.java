@@ -7,8 +7,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.web.socket.*;
 
 import java.io.IOException;
@@ -23,9 +21,6 @@ import java.util.stream.Stream;
 @Slf4j
 public final class VcmpHandler implements WebSocketHandler {
 
-    private final AsyncTaskExecutor asyncTaskExecutor;
-    private final TaskScheduler taskScheduler;
-
     private final ObjectMapper objectMapper;
 
     private final Object target;
@@ -37,11 +32,9 @@ public final class VcmpHandler implements WebSocketHandler {
     @Setter
     private Runnable disconnectHandler;
 
-    public VcmpHandler(Object target, AsyncTaskExecutor asyncTaskExecutor, TaskScheduler taskScheduler) {
+    public VcmpHandler(Object target) {
 
         this.target = target;
-        this.asyncTaskExecutor = asyncTaskExecutor;
-        this.taskScheduler = taskScheduler;
 
         objectMapper = createObjectMapper();
 
@@ -59,10 +52,10 @@ public final class VcmpHandler implements WebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket session opened: {}", session.getId());
 
-        VcmpSession vcmpSession = new VcmpSession(session, this, this.taskScheduler);
+        VcmpSession vcmpSession = new VcmpSession(session, this);
         sessions.put(session.getId(), vcmpSession);
 
-        asyncTaskExecutor.submit(() -> {
+        Executor.getExecutor().submit(() -> {
             try {
                 MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionConnected.class, vcmpSession);
             }
@@ -137,7 +130,7 @@ public final class VcmpHandler implements WebSocketHandler {
 
         // Handle it asynchronously from here,
         // so that a handler cannot block the receiver thread.
-        asyncTaskExecutor.submit(() -> {
+        Executor.getExecutor().submit(() -> {
             switch (frame.getType()) {
                 case ACK:
                     log.debug("Received ACK for {}.", frame.getId());

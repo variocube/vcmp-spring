@@ -1,8 +1,10 @@
 package com.variocube.vcmp;
 
-import lombok.*;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.TaskScheduler;
+import lombok.val;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -34,7 +36,6 @@ public class VcmpSession {
 
     private final WebSocketSession webSocketSession;
     private final VcmpHandler vcmpHandler;
-    private final TaskScheduler taskScheduler;
 
     private final ConcurrentHashMap<String, VcmpCallback> callbacks = new ConcurrentHashMap<>();
     private final ReentrantLock sendLock = new ReentrantLock();
@@ -86,7 +87,7 @@ public class VcmpSession {
         if (this.awaitingHeartbeat.getAndSet(false)) {
             this.lastHeartbeatReceived = Instant.now();
             this.heartbeatReceivedCount++;
-            taskScheduler.schedule(() -> sendHeartbeat(heartbeat), Instant.now().plusMillis(heartbeat.getHeartbeatInterval()));
+            Executor.getExecutor().schedule(() -> sendHeartbeat(heartbeat), heartbeat.getHeartbeatInterval(), TimeUnit.MILLISECONDS);
         }
     }
 
@@ -106,7 +107,7 @@ public class VcmpSession {
 
                 // verify we received a heartbeat back, after double the interval
                 // if everything works fine we should receive the heartbeat after (interval + latency)
-                taskScheduler.schedule(() -> {
+                Executor.getExecutor().schedule(() -> {
                     if (this.isOpen()) {
                         if (this.lastHeartbeatReceived == null || this.lastHeartbeatReceived.isBefore(sent)) {
                             log.error("Did not receive heartbeat in time. Closing session.");
@@ -120,7 +121,7 @@ public class VcmpSession {
                             }
                         }
                     }
-                }, Instant.now().plusMillis(heartbeat.getHeartbeatInterval() * 2));
+                }, heartbeat.getHeartbeatInterval() * 2, TimeUnit.MILLISECONDS);
             }
         }
         catch (IOException e) {
@@ -138,7 +139,7 @@ public class VcmpSession {
 
     /**
      * Sends a VCMP frame on the underlying WebSocketSession.
-     * This method must be synchronized to avoid sending on multiple
+     * This method uses a lock to avoid sending on multiple
      * threads concurrently.
      * @param frame The frame to send
      * @throws IOException If an error occurred while sending
@@ -148,10 +149,19 @@ public class VcmpSession {
             log.trace("Sending frame {}", frame);
 
             val it = new StringChunkIterator(frame.serialize(), webSocketSession.getTextMessageSizeLimit());
+
+            // Acquire lock
             try {
                 if (!sendLock.tryLock(SEND_LOCK_TIMEOUT, TimeUnit.SECONDS)) {
-                    throw new Exception("Could not acquire send lock.");
+                    throw new IOException("Could not acquire send lock.");
                 }
+            }
+            catch (InterruptedException e) {
+                throw new IOException("Thread was interrupted while acquiring lock.");
+            }
+
+            // Send chunks
+            try {
                 log.trace("Acquired send lock. Start sending chunks...");
                 while (it.hasNext()) {
                     val message = new TextMessage(it.next(), !it.hasNext());
@@ -165,9 +175,8 @@ public class VcmpSession {
                 throw new IOException("Error while sending web socket message", e);
             }
             finally {
-                if (sendLock.isHeldByCurrentThread()) {
-                    sendLock.unlock();
-                }
+                // Make sure to release lock in any case
+                sendLock.unlock();
             }
 
             log.trace("Finished sending frame {}", frame);

@@ -3,10 +3,8 @@ package com.variocube.vcmp.connect;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.VcmpConnectionManager;
 import lombok.extern.slf4j.Slf4j;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.scheduling.TaskScheduler;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -23,12 +21,6 @@ public class ConnectTest extends VcmpTestBase {
 
     @Autowired
     private ConnectEndpoint endpoint;
-
-    @Autowired
-    private TaskScheduler taskScheduler;
-
-    @Autowired
-    private AsyncTaskExecutor asyncTaskExecutor;
 
     @Test
     public void canSend() throws IOException {
@@ -63,7 +55,7 @@ public class ConnectTest extends VcmpTestBase {
     @Test
     public void canDisconnect() throws IOException {
         // manually create additional client
-        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, new ConnectClient(), ConnectClient.URL)) {
+        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(new ConnectClient(), ConnectClient.URL)) {
             // after start, we must have 2 connections
             connectionManager.start();
             await().until(() -> endpoint.getSessionPool().getSessionCount() == 2);
@@ -77,7 +69,7 @@ public class ConnectTest extends VcmpTestBase {
 
     @Test
     public void canHandleMissingEndpoint() throws IOException {
-        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, new ConnectClient(), "ws://localhost:12345/non/existing/endpoint")) {
+        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(new ConnectClient(), "ws://localhost:12345/non/existing/endpoint")) {
             connectionManager.start();
 
             await().until(() -> connectionManager.getConnectionError() != null);
@@ -87,7 +79,7 @@ public class ConnectTest extends VcmpTestBase {
     @Test
     public void canReconnect() throws IOException {
         ConnectClient reconnectClient = new ConnectClient();
-        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, reconnectClient, ConnectClient.URL)) {
+        try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(reconnectClient, ConnectClient.URL)) {
             // set reconnect timeout to 300 ms, so we can catch the disconnected state when polling
             connectionManager.setReconnectTimeout(300);
 

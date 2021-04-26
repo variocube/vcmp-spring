@@ -1,13 +1,12 @@
 plugins {
     id 'java-library'
-    id 'org.springframework.boot' version '2.3.3.RELEASE'
-    id "io.spring.dependency-management" version "1.0.10.RELEASE"
+    id 'org.springframework.boot' version '2.4.5'
     id "io.freefair.lombok" version "5.2.1"
     id 'maven-publish'
 }
 
 group 'com.variocube'
-version '1.0.4'
+version '2.0.0'
 
 repositories {
     mavenCentral()
@@ -22,15 +21,13 @@ jar {
 }
 
 dependencies {
-    api group: 'org.springframework.boot', name: 'spring-boot-starter'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-web'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket'
-    api group: 'com.fasterxml.jackson.core', name: 'jackson-databind'
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter', version: '2.+'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-web', version: '2.+'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket', version: '2.+'
+    api group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.+'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test', version: '2.+'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security', version: '2.+'
     testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
-    testRuntime group: 'org.springframework.boot', name: 'spring-boot-devtools'
-    annotationProcessor group: 'org.springframework.boot', name: 'spring-boot-configuration-processor'
 }
 
 lombok.config['lombok.anyConstructor.addConstructorProperties'] = "true"
@@ -57,14 +54,6 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
-            versionMapping {
-                usage('java-api') {
-                    fromResolutionOf('runtimeClasspath')
-                }
-                usage('java-runtime') {
-                    fromResolutionResult()
-                }
-            }
             artifact sourcesJar
             artifact javadocJar
         }
@@ -72,6 +61,7 @@ publishing {
 }
 
 test {
+    useJUnitPlatform()
     testLogging {
         showStandardStreams = true
     }

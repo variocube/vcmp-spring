@@ -3,10 +3,7 @@ package com.variocube.vcmp.chat;
 import com.variocube.vcmp.SecurityConfiguration;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.VcmpConnectionManager;
-import org.junit.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.scheduling.TaskScheduler;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -17,20 +14,14 @@ import static org.awaitility.Awaitility.await;
 
 public class ChatTest extends VcmpTestBase {
 
-    @Autowired
-    private TaskScheduler taskScheduler;
-
-    @Autowired
-    private AsyncTaskExecutor asyncTaskExecutor;
-
     @Test
     public void canChat() throws IOException {
 
         ChatClient alice = new ChatClient(SecurityConfiguration.ALICE_USERNAME, SecurityConfiguration.ALICE_PASSWORD, Collections.singletonList("flowers"));
         ChatClient bob = new ChatClient(SecurityConfiguration.BOB_USERNAME, SecurityConfiguration.BOB_PASSWORD, Collections.emptyList());
 
-        try (VcmpConnectionManager aliceConnection = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, alice, VcmpTestBase.BASE_URL + "/chat");
-             VcmpConnectionManager bobConnection = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, bob, VcmpTestBase.BASE_URL + "/chat")) {
+        try (VcmpConnectionManager aliceConnection = new VcmpConnectionManager(alice, VcmpTestBase.BASE_URL + "/chat");
+             VcmpConnectionManager bobConnection = new VcmpConnectionManager(bob, VcmpTestBase.BASE_URL + "/chat")) {
 
             aliceConnection.start();
             bobConnection.start();

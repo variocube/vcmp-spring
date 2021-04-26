@@ -1,7 +1,7 @@
 package com.variocube.vcmp.autowire;
 
 import com.variocube.vcmp.VcmpTestBase;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import static org.assertj.core.api.Assertions.assertThat;

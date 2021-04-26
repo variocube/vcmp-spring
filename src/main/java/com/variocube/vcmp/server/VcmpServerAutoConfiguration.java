@@ -26,8 +26,6 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
 
     private final ApplicationContext applicationContext;
     private final Environment environment;
-    private final AsyncTaskExecutor asyncTaskExecutor;
-    private final TaskScheduler taskScheduler;
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
@@ -39,7 +37,7 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
             String path = environment.resolveRequiredPlaceholders(vcmpEndpoint.path());
             if (!StringUtils.isEmpty(path)) {
                 log.info("Registering endpoint {} with {}", path, endpoint.getClass().getSimpleName());
-                registry.addHandler(new VcmpHandler(endpoint, asyncTaskExecutor, taskScheduler), path)
+                registry.addHandler(new VcmpHandler(endpoint), path)
                         .setAllowedOrigins("*");
             }
         }

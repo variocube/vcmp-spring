@@ -1,5 +1,6 @@
 package com.variocube.vcmp.client;
 
+import com.variocube.vcmp.Executor;
 import com.variocube.vcmp.MethodAnnotationUtils;
 import com.variocube.vcmp.VcmpHandler;
 import lombok.Getter;
@@ -7,24 +8,20 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tomcat.websocket.Constants;
 import org.apache.tomcat.websocket.WsWebSocketContainer;
-import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.lang.Nullable;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.util.concurrent.ListenableFutureCallback;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import javax.websocket.ContainerProvider;
 import javax.websocket.WebSocketContainer;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 public class VcmpConnectionManager implements Closeable {
@@ -60,7 +57,6 @@ public class VcmpConnectionManager implements Closeable {
 
     private final URI uri;
     private final VcmpHandler vcmpHandler;
-    private final TaskScheduler taskScheduler;
 
     @Getter
     @Setter
@@ -74,10 +70,9 @@ public class VcmpConnectionManager implements Closeable {
     private boolean isRunning = false;
 
 
-    public VcmpConnectionManager(TaskScheduler taskScheduler, AsyncTaskExecutor asyncTaskExecutor, Object target, String uriTemplate, Object... uriVariables) {
-        this.taskScheduler = taskScheduler;
+    public VcmpConnectionManager(Object target, String uriTemplate, Object... uriVariables) {
         this.uri = UriComponentsBuilder.fromUriString(uriTemplate).buildAndExpand(uriVariables).encode().toUri();
-        this.vcmpHandler = new VcmpHandler(target, asyncTaskExecutor, taskScheduler);
+        this.vcmpHandler = new VcmpHandler(target);
         this.vcmpHandler.setDisconnectHandler(this::handleDisconnect);
 
         this.headers.put(WebSocketHttpHeaders.SEC_WEBSOCKET_EXTENSIONS, Collections.singletonList("permessage-deflate"));
@@ -120,7 +115,7 @@ public class VcmpConnectionManager implements Closeable {
         if (this.isRunning) {
             log.info("Scheduling reconnect in {} ms", delayMs);
             try {
-                taskScheduler.schedule(this::openSession, Instant.now().plus(delayMs, ChronoUnit.MILLIS));
+                Executor.getExecutor().schedule(this::openSession, delayMs, TimeUnit.MILLISECONDS);
             }
             catch (Exception e) {
                 log.error("Could not schedule reconnect", e);
@@ -133,13 +128,14 @@ public class VcmpConnectionManager implements Closeable {
             log.info("Initiate handshake with {}", this.uri);
             // shake them hands...
             webSocketClient.doHandshake(this.vcmpHandler, this.headers, this.uri)
-                    .addCallback(new ListenableFutureCallback<WebSocketSession>() {
+                    .addCallback(new ListenableFutureCallback<>() {
                         @Override
                         public void onSuccess(@Nullable WebSocketSession result) {
                             log.info("Connection established.");
                             webSocketSession = result;
                             connectionError = null;
                         }
+
                         @Override
                         public void onFailure(Throwable ex) {
                             log.error("Failed to connect", ex);

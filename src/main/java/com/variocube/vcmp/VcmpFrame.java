@@ -3,7 +3,6 @@ package com.variocube.vcmp;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.Value;
-import lombok.var;
 import org.springframework.util.Base64Utils;
 
 import java.security.SecureRandom;

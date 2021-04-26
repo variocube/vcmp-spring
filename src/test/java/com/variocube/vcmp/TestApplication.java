@@ -15,14 +15,6 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 class TestApplication {
 
     @Bean
-    public TaskScheduler taskScheduler() {
-        return new ThreadPoolTaskScheduler();
-    }
-
-    @Bean
-    public AsyncTaskExecutor asyncTaskExecutor() { return new ThreadPoolTaskExecutor(); }
-
-    @Bean
     public RestTemplate restTemplate() {
         return new RestTemplate();
     }

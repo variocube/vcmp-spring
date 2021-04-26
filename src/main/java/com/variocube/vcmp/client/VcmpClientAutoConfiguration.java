@@ -9,8 +9,6 @@ import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.event.ContextStoppedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.env.Environment;
-import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.Async;
 
 import java.io.IOException;
@@ -23,7 +21,7 @@ public class VcmpClientAutoConfiguration {
 
     private final ArrayList<VcmpConnectionManager> managers = new ArrayList<>();
 
-    public VcmpClientAutoConfiguration(ApplicationContext applicationContext, Environment environment, TaskScheduler taskScheduler, AsyncTaskExecutor asyncTaskExecutor) {
+    public VcmpClientAutoConfiguration(ApplicationContext applicationContext, Environment environment) {
         log.info("Looking up VCMP clients in application context.");
         Map<String, Object> clients = applicationContext.getBeansWithAnnotation(VcmpClient.class);
         for (Object client : clients.values()) {
@@ -31,7 +29,7 @@ public class VcmpClientAutoConfiguration {
             VcmpClient vcmpClient = targetClass.getAnnotation(VcmpClient.class);
             String url = environment.resolveRequiredPlaceholders(vcmpClient.url());
             log.info("Found VCMP client `{}` connecting to {}", targetClass.getSimpleName(), url);
-            VcmpConnectionManager manager = new VcmpConnectionManager(taskScheduler, asyncTaskExecutor, client, url);
+            VcmpConnectionManager manager = new VcmpConnectionManager(client, url);
             managers.add(manager);
             manager.setReconnectTimeout(vcmpClient.reconnect());
         }

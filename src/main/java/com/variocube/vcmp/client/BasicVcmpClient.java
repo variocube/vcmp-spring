@@ -13,29 +13,21 @@ public class BasicVcmpClient {
     @Getter(AccessLevel.PROTECTED)
     private VcmpSession session;
 
-    private final Object sessionLock = new Object();
-
     @VcmpSessionDisconnected
     public void handleSessionDisconnected(VcmpSession session) {
-        synchronized (sessionLock) {
-            this.session = null;
-        }
+        this.session = null;
     }
 
     @VcmpSessionConnected
     public void handleSessionConnected(VcmpSession session) {
-        synchronized (sessionLock) {
-            this.session = session;
-        }
+        this.session = session;
     }
 
     public VcmpCallback send(VcmpMessage message) throws IOException {
-        synchronized (sessionLock) {
-            if (session == null) {
-                throw new IOException("Not connected.");
-            }
-            return this.session.send(message);
+        if (session == null) {
+            throw new IOException("Not connected.");
         }
+        return this.session.send(message);
     }
 
     public void send(VcmpMessage message, Runnable ack) throws IOException {
@@ -43,12 +35,10 @@ public class BasicVcmpClient {
     }
 
     public void send(VcmpMessage message, Runnable ack, Runnable nak) throws IOException {
-        synchronized (sessionLock) {
-            if (session == null) {
-                throw new IOException("Not connected.");
-            }
-            this.session.send(message, ack, nak);
+        if (session == null) {
+            throw new IOException("Not connected.");
         }
+        this.session.send(message, ack, nak);
     }
 
     public boolean isConnected() {

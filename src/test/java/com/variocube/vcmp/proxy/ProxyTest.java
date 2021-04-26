@@ -1,7 +1,7 @@
 package com.variocube.vcmp.proxy;
 
 import com.variocube.vcmp.VcmpTestBase;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 public class ProxyTest extends VcmpTestBase {
