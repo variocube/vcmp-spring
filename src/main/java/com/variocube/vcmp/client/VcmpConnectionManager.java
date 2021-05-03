@@ -36,7 +36,7 @@ public class VcmpConnectionManager implements Closeable {
     /**
      * Send timeout for a message part (web socket frame) in seconds.
      */
-    private static final long SEND_TIMEOUT = 4 * 1000; // 4 seconds
+    private static final long SEND_TIMEOUT = 10 * 1000; // 10 seconds
 
     /**
      * Buffer size for text messages.
