@@ -56,7 +56,7 @@ public class VcmpSessionPool {
         return sessions.stream().anyMatch(session -> session.hasUsername(username));
     }
 
-    private List<VcmpSession> getOpenSessions() {
+    public List<VcmpSession> getOpenSessions() {
         ArrayList<VcmpSession> openSessions = new ArrayList<>(sessions.size());
         for (VcmpSession session : new ArrayList<>(sessions)) {
             if (!session.isOpen()) {
