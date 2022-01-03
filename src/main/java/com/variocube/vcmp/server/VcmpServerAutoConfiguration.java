@@ -35,7 +35,7 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
 
             VcmpEndpoint vcmpEndpoint = endpointClass.getAnnotation(VcmpEndpoint.class);
             String path = environment.resolveRequiredPlaceholders(vcmpEndpoint.path());
-            if (!StringUtils.isEmpty(path)) {
+            if (StringUtils.hasText(path)) {
                 log.info("Registering endpoint {} with {}", path, endpoint.getClass().getSimpleName());
                 registry.addHandler(new VcmpHandler(endpoint), path)
                         .setAllowedOrigins("*");

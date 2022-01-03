@@ -74,7 +74,7 @@ public class VcmpSession {
         sendFrame(vcmpFrame);
     }
 
-    public void initiateHeartbeat(int intervalMillis) throws IOException {
+    public void initiateHeartbeat(int intervalMillis) {
         sendHeartbeat(VcmpFrame.createHeartbeat(intervalMillis));
     }
 
@@ -210,6 +210,10 @@ public class VcmpSession {
         return webSocketSession.getUri();
     }
 
+    public Principal getPrincipal() {
+        return webSocketSession.getPrincipal();
+    }
+
     public void close() throws IOException {
         webSocketSession.close();
     }
@@ -230,12 +234,10 @@ public class VcmpSession {
 
     @Override
     public boolean equals(Object obj) {
-        return Optional.ofNullable(obj)
-                .map(VcmpSession.class::isInstance)
-                .map(VcmpSession.class::cast)
-                .map(VcmpSession::getId)
-                .filter(id -> Objects.equals(this.getId(), id))
-                .isPresent();
+        if (obj instanceof VcmpSession) {
+            return Objects.equals(this.getId(), ((VcmpSession)obj).getId());
+        }
+        return false;
     }
 
     @Override

@@ -2,7 +2,6 @@ package com.variocube.vcmp;
 
 import lombok.val;
 
-import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
