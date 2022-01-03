@@ -138,7 +138,13 @@ public class VcmpConnectionManager implements Closeable {
 
                         @Override
                         public void onFailure(Throwable ex) {
-                            log.error("Failed to connect", ex);
+                            // Repeated connect failures are logged as warnings without a stack trace.
+                            if (connectionError == null) {
+                                log.error("Failed to connect", ex);
+                            }
+                            else {
+                                log.warn("Failed to connect");
+                            }
                             connectionError = ex;
                             scheduleReconnect(reconnectTimeout);
                         }
