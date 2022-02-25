@@ -3,6 +3,9 @@ package com.variocube.vcmp;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -98,4 +101,29 @@ public class VcmpCallback {
         callback.state = State.Failed;
         return callback;
     }
+
+    public static VcmpCallback all(VcmpCallback... callbacks) {
+        return all(Arrays.asList(callbacks));
+    }
+
+    public static VcmpCallback all(Collection<VcmpCallback> callbacks) {
+        VcmpCallback result = new VcmpCallback();
+        Runnable checker = () -> {
+            if (callbacks.stream().noneMatch(callback -> callback.state == State.Pending)) {
+                if (callbacks.stream().anyMatch(callback -> callback.state == State.Failed)) {
+                    result.notifyNak();
+                }
+                else {
+                    result.notifyAck();
+                }
+            }
+        };
+        for (val callback : callbacks) {
+            callback.onAck(checker);
+            callback.onNak(checker);
+        }
+        return result;
+    }
+
+
 }

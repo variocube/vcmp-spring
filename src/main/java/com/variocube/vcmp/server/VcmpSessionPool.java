@@ -4,6 +4,7 @@ import com.variocube.vcmp.VcmpCallback;
 import com.variocube.vcmp.VcmpMessage;
 import com.variocube.vcmp.VcmpSession;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -25,14 +26,16 @@ public class VcmpSessionPool {
         sessions.remove(session);
     }
 
-    public void broadcast(VcmpMessage message) {
+    public VcmpCallback broadcast(VcmpMessage message) {
+        val callbacks = new ArrayList<VcmpCallback>();
         for (VcmpSession session : getOpenSessions()) {
             try {
-                session.send(message);
+                callbacks.add(session.send(message));
             } catch (IOException e) {
                 // ignore errors in broadcast
             }
         }
+        return VcmpCallback.all(callbacks);
     }
 
     public VcmpCallback send(String recipient, VcmpMessage message) throws IOException {
