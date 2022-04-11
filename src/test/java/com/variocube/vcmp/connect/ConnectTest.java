@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -81,7 +82,9 @@ public class ConnectTest extends VcmpTestBase {
         ConnectClient reconnectClient = new ConnectClient();
         try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(reconnectClient, ConnectClient.URL)) {
             // set reconnect timeout to 300 ms, so we can catch the disconnected state when polling
-            connectionManager.setReconnectTimeout(300);
+            connectionManager.setReconnectTimeoutMin(Duration.ZERO);
+            connectionManager.setReconnectTimeoutMax(Duration.ofMillis(500));
+            connectionManager.setDisconnectTimeout(Duration.ZERO);
 
             // start the connection
             connectionManager.start();

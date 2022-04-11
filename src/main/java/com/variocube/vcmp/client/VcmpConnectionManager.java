@@ -6,6 +6,7 @@ import com.variocube.vcmp.VcmpHandler;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.apache.tomcat.websocket.Constants;
 import org.apache.tomcat.websocket.WsWebSocketContainer;
 import org.springframework.lang.Nullable;
@@ -20,6 +21,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
@@ -45,9 +47,36 @@ public class VcmpConnectionManager implements Closeable {
 
 
     /**
-     * Default timeout before reconnecting after the connection was closed.
+     * Default minimum timeout before reconnecting after the connection was closed in seconds.
      */
-    static final long DEFAULT_RECONNECT_TIMEOUT = 10 * 1000; // 10 seconds
+    static final long DEFAULT_RECONNECT_TIMEOUT_MIN_SECONDS = 10;
+
+    /**
+     * Default minimum timeout before reconnecting after the connection was closed as a Duration.
+     */
+    static final Duration DEFAULT_RECONNECT_TIMEOUT_MIN = Duration.ofSeconds(DEFAULT_RECONNECT_TIMEOUT_MIN_SECONDS);
+
+
+    /**
+     * Default maximum timeout before reconnecting after the connection was closed in seconds.
+     */
+    static final long DEFAULT_RECONNECT_TIMEOUT_MAX_SECONDS = 30;
+
+    /**
+     * Default maximum timeout before reconnecting after the connection was closed as a Duration.
+     */
+    static final Duration DEFAULT_RECONNECT_TIMEOUT_MAX = Duration.ofSeconds(DEFAULT_RECONNECT_TIMEOUT_MAX_SECONDS);
+
+
+    /**
+     * Default timeout after a disconnect in seconds.
+     */
+    static final long DEFAULT_DISCONNECT_TIMEOUT_SECONDS = 10;
+
+    /**
+     * Default timeout after a disconnect as a Duration.
+     */
+    static final Duration DEFAULT_DISCONNECT_TIMEOUT = Duration.ofSeconds(DEFAULT_DISCONNECT_TIMEOUT_SECONDS);
 
     private static final long MAX_SESSION_IDLE_TIMEOUT = 60 * 1000; // 60 seconds
 
@@ -60,7 +89,16 @@ public class VcmpConnectionManager implements Closeable {
 
     @Getter
     @Setter
-    private long reconnectTimeout = DEFAULT_RECONNECT_TIMEOUT;
+    private Duration reconnectTimeoutMin = DEFAULT_RECONNECT_TIMEOUT_MIN;
+
+    @Getter
+    @Setter
+    private Duration reconnectTimeoutMax = DEFAULT_RECONNECT_TIMEOUT_MAX;
+
+    @Getter
+    @Setter
+    private Duration disconnectTimeout = DEFAULT_DISCONNECT_TIMEOUT;
+
 
     private WebSocketSession webSocketSession;
 
@@ -107,15 +145,18 @@ public class VcmpConnectionManager implements Closeable {
     }
 
     private void handleDisconnect() {
-        scheduleReconnect(reconnectTimeout * 2);
+        scheduleReconnect(true);
     }
 
-    private void scheduleReconnect(long delayMs) {
+    private void scheduleReconnect(boolean afterDisconnect) {
         webSocketSession = null;
         if (this.isRunning) {
-            log.info("Scheduling reconnect in {} ms", delayMs);
+            val baseDelay = afterDisconnect ? disconnectTimeout : Duration.ZERO;
+            val randomDelay = Duration.ofMillis((long) (Math.random() * reconnectTimeoutMax.minus(reconnectTimeoutMin).toMillis()));
+            val reconnectTimeoutMs = baseDelay.plus(reconnectTimeoutMin).plus(randomDelay).toMillis();
+            log.info("Scheduling reconnect in {} ms", reconnectTimeoutMs);
             try {
-                Executor.getExecutor().schedule(this::openSession, delayMs, TimeUnit.MILLISECONDS);
+                Executor.getExecutor().schedule(this::openSession, reconnectTimeoutMs, TimeUnit.MILLISECONDS);
             }
             catch (Exception e) {
                 log.error("Could not schedule reconnect", e);
@@ -146,7 +187,7 @@ public class VcmpConnectionManager implements Closeable {
                                 log.warn("Failed to connect");
                             }
                             connectionError = ex;
-                            scheduleReconnect(reconnectTimeout);
+                            scheduleReconnect(false);
                         }
                     });
         }

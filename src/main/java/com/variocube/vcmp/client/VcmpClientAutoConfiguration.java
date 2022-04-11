@@ -12,6 +12,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Async;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Map;
 
@@ -30,8 +31,10 @@ public class VcmpClientAutoConfiguration {
             String url = environment.resolveRequiredPlaceholders(vcmpClient.url());
             log.info("Found VCMP client `{}` connecting to {}", targetClass.getSimpleName(), url);
             VcmpConnectionManager manager = new VcmpConnectionManager(client, url);
+            manager.setReconnectTimeoutMin(Duration.ofSeconds(vcmpClient.reconnectMinSeconds()));
+            manager.setReconnectTimeoutMax(Duration.ofSeconds(vcmpClient.reconnectMaxSeconds()));
+            manager.setDisconnectTimeout(Duration.ofSeconds(vcmpClient.disconnectSeconds()));
             managers.add(manager);
-            manager.setReconnectTimeout(vcmpClient.reconnect());
         }
     }
 

@@ -23,5 +23,9 @@ public @interface VcmpClient {
 
     String url();
 
-    long reconnect() default VcmpConnectionManager.DEFAULT_RECONNECT_TIMEOUT;
+    long reconnectMinSeconds() default VcmpConnectionManager.DEFAULT_RECONNECT_TIMEOUT_MIN_SECONDS;
+
+    long reconnectMaxSeconds() default VcmpConnectionManager.DEFAULT_RECONNECT_TIMEOUT_MAX_SECONDS;
+
+    long disconnectSeconds() default VcmpConnectionManager.DEFAULT_DISCONNECT_TIMEOUT_SECONDS;
 }
