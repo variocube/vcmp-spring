@@ -81,9 +81,9 @@ public class ConnectTest extends VcmpTestBase {
     public void canReconnect() throws IOException {
         ConnectClient reconnectClient = new ConnectClient();
         try (VcmpConnectionManager connectionManager = new VcmpConnectionManager(reconnectClient, ConnectClient.URL)) {
-            // set reconnect timeout to 300 ms, so we can catch the disconnected state when polling
-            connectionManager.setReconnectTimeoutMin(Duration.ZERO);
-            connectionManager.setReconnectTimeoutMax(Duration.ofMillis(500));
+            // set reconnect timeout of 300 ms, so we can catch the disconnected state when polling
+            connectionManager.setReconnectTimeoutMin(Duration.ofMillis(300));
+            connectionManager.setReconnectTimeoutMax(Duration.ofMillis(300));
             connectionManager.setDisconnectTimeout(Duration.ZERO);
 
             // start the connection
