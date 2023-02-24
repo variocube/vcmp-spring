@@ -3,7 +3,6 @@ package com.variocube.vcmp;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
@@ -82,10 +81,26 @@ public class VcmpCallback {
         return completableFuture;
     }
 
+    /**
+     * Awaits an ACK or NAK response to the message. Returns on ACK, or throws an exception on NAK.
+     * WARNING: this blocks the current thread, possibly indefinitely.
+     * @deprecated Because this may block the current thread indefinitely.
+     * use await(long timeout, TimeUnit unit) instead.
+     */
+    @Deprecated
     public void await() {
         toCompletableFuture().join();
     }
 
+    /**
+     * Awaits an ACK or NAK response to the message for at max `timeout` `unit`.
+     * Returns on ACK, or throws an exception on NAK, or when the timeout elapsed.
+     * @param timeout The timeout
+     * @param unit The unit the timeout is specified in.
+     * @throws InterruptedException
+     * @throws ExecutionException
+     * @throws TimeoutException
+     */
     public void await(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
         toCompletableFuture().get(timeout, unit);
     }

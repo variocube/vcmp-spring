@@ -6,9 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 public class VcmpCallbackTest {
 
@@ -41,6 +42,13 @@ public class VcmpCallbackTest {
         VcmpCallback callback = new VcmpCallback();
         new Thread(callback::notifyAck).start();
         callback.await();
+    }
+
+    @Test
+    public void canAwaitAckTimeout() throws ExecutionException, InterruptedException, TimeoutException {
+        VcmpCallback callback = new VcmpCallback();
+        new Thread(callback::notifyAck).start();
+        callback.await(1, TimeUnit.SECONDS);
     }
 
     @Test
