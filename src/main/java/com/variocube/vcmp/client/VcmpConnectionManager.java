@@ -3,6 +3,7 @@ package com.variocube.vcmp.client;
 import com.variocube.vcmp.Executor;
 import com.variocube.vcmp.MethodAnnotationUtils;
 import com.variocube.vcmp.VcmpHandler;
+import jakarta.websocket.WebSocketContainer;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +17,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import javax.websocket.WebSocketContainer;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
