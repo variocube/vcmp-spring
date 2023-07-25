@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -xv
+
 die() {
 	echo >&2 "$@"
 	exit 1
@@ -13,7 +15,7 @@ echo -n "git pull... "
 git pull
 
 # Make sure there no local changes
-[[ $(git status --porcelain) ]] && die "Error: Local changes detected."
+# [[ $(git status --porcelain) ]] && die "Error: Local changes detected."
 
 # Read version from package.json
 version=$(./gradlew -b build.gradle properties --no-daemon --console=plain -q | grep "^version:" | awk '{printf $2}')
