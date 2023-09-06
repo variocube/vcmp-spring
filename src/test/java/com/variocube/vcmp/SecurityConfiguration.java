@@ -3,16 +3,15 @@ package com.variocube.vcmp;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+
 
 @Configuration
-@EnableWebSecurity
-public class SecurityConfiguration extends WebSecurityConfigurerAdapter {
+public class SecurityConfiguration {
 
     public static final String USERNAME = "clientUser";
     public static final String PASSWORD = "password";
@@ -23,14 +22,12 @@ public class SecurityConfiguration extends WebSecurityConfigurerAdapter {
     public static final String BOB_USERNAME = "bob";
     public static final String BOB_PASSWORD = "password";
 
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-        http.httpBasic().and()
-                .authorizeRequests().anyRequest().permitAll();
+    @Bean
+    public SecurityFilterChain configure(HttpSecurity http) throws Exception {
+        return http.httpBasic(basic -> {}).build();
     }
 
     @Bean
-    @Override
     public UserDetailsService userDetailsService() {
         UserDetails user =
                 User.withDefaultPasswordEncoder()
