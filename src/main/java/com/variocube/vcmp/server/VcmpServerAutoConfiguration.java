@@ -5,12 +5,9 @@ import com.variocube.vcmp.VcmpHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
-import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.util.StringUtils;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
@@ -23,7 +20,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 @Slf4j
 @EnableWebSocket
-@ComponentScan(basePackages = {"com.variocube.vcmp"})
 public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
 
     private final ApplicationContext applicationContext;

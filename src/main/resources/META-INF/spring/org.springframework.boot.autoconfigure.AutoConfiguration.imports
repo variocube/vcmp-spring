@@ -1,0 +1,2 @@
+com.variocube.vcmp.server.VcmpServerAutoConfiguration
+com.variocube.vcmp.client.VcmpClientAutoConfiguration
