@@ -1,6 +1,6 @@
 package com.variocube.vcmp.chat;
 
-import com.variocube.vcmp.SecurityConfiguration;
+import com.variocube.vcmp.UserServiceImpl;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.VcmpConnectionManager;
 import org.junit.jupiter.api.Test;
@@ -17,8 +17,8 @@ public class ChatTest extends VcmpTestBase {
     @Test
     public void canChat() throws IOException {
 
-        ChatClient alice = new ChatClient(SecurityConfiguration.ALICE_USERNAME, SecurityConfiguration.ALICE_PASSWORD, Collections.singletonList("flowers"));
-        ChatClient bob = new ChatClient(SecurityConfiguration.BOB_USERNAME, SecurityConfiguration.BOB_PASSWORD, Collections.emptyList());
+        ChatClient alice = new ChatClient(UserServiceImpl.ALICE_USERNAME, UserServiceImpl.ALICE_PASSWORD, Collections.singletonList("flowers"));
+        ChatClient bob = new ChatClient(UserServiceImpl.BOB_USERNAME, UserServiceImpl.BOB_PASSWORD, Collections.emptyList());
 
         try (VcmpConnectionManager aliceConnection = new VcmpConnectionManager(alice, VcmpTestBase.BASE_URL + "/chat");
              VcmpConnectionManager bobConnection = new VcmpConnectionManager(bob, VcmpTestBase.BASE_URL + "/chat")) {
