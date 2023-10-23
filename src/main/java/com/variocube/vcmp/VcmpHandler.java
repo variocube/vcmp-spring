@@ -109,7 +109,8 @@ public final class VcmpHandler implements WebSocketHandler {
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
-        log.error("Transport error", exception);
+        log.error("Transport error in session {}: {}", session.getId(), exception.getMessage());
+        log.debug("Full exception", exception);
         if (session.isOpen()) {
             session.close();
         }
