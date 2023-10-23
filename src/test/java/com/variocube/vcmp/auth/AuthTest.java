@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
 
-import static com.variocube.vcmp.SecurityConfiguration.USERNAME;
+import static com.variocube.vcmp.UserServiceImpl.USERNAME;
 import static org.awaitility.Awaitility.await;
 
 public class AuthTest extends VcmpTestBase {
