@@ -1,6 +1,5 @@
 package com.variocube.vcmp;
 
-import jakarta.websocket.CloseReason;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +9,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import javax.websocket.CloseReason;
 import java.io.IOException;
 import java.net.URI;
 import java.security.Principal;

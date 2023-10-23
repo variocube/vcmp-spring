@@ -1,19 +1,12 @@
 plugins {
     id 'java-library'
-    id 'org.springframework.boot' version '3.1.2'
-    id "io.spring.dependency-management" version "1.1.2"
-    id "io.freefair.lombok" version "8.1.0"
+    id 'org.springframework.boot' version '2.4.5'
+    id "io.freefair.lombok" version "5.2.1"
     id 'maven-publish'
 }
 
 group 'com.variocube'
-version '3.0.0'
-
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
-    }
-}
+version '2.3.2'
 
 repositories {
     mavenCentral()
@@ -28,17 +21,16 @@ jar {
 }
 
 dependencies {
-    api group: 'org.springframework.boot', name: 'spring-boot-starter'
-    api group: 'org.springframework.data', name: 'spring-data-commons'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-web'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter', version: '2.+'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-web', version: '2.+'
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket', version: '2.+'
 
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test', version: '2.+'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security', version: '2.+'
     testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
 }
 
-// lombok.config['lombok.anyConstructor.addConstructorProperties'] = "true"
+lombok.config['lombok.anyConstructor.addConstructorProperties'] = "true"
 
 task sourcesJar(type: Jar) {
     from sourceSets.main.allJava
