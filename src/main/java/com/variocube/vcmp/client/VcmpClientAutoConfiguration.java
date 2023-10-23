@@ -4,7 +4,6 @@ import com.variocube.vcmp.ClassUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.event.ContextStoppedEvent;
@@ -19,7 +18,6 @@ import java.util.Map;
 
 @Configuration
 @Slf4j
-@ComponentScan(basePackages = {"com.variocube.vcmp"})
 public class VcmpClientAutoConfiguration {
 
     private final ArrayList<VcmpConnectionManager> managers = new ArrayList<>();

@@ -1,6 +1,6 @@
 package com.variocube.vcmp.auth;
 
-import com.variocube.vcmp.UserServiceImpl;
+import com.variocube.vcmp.SecurityConfiguration;
 import com.variocube.vcmp.VcmpListener;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.BasicVcmpClient;
@@ -13,7 +13,7 @@ public class AuthClient extends BasicVcmpClient {
 
     @VcmpHttpHeaders
     public void handleHttpHeaders(HttpHeaders httpHeaders) {
-        httpHeaders.setBasicAuth(UserServiceImpl.USERNAME, UserServiceImpl.PASSWORD);
+        httpHeaders.setBasicAuth(SecurityConfiguration.USERNAME, SecurityConfiguration.PASSWORD);
     }
 
     String secret;

@@ -35,7 +35,6 @@ dependencies {
 
     testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
     testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
-    api group: 'org.springframework.security', name: 'spring-security-messaging'
     testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
 }
 
