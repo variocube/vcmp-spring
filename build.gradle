@@ -6,7 +6,6 @@ plugins {
 }
 
 group 'com.variocube'
-version '2.3.2'
 
 repositories {
     mavenCentral()
