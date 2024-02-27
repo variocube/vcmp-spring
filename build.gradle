@@ -1,6 +1,7 @@
 plugins {
     id 'java-library'
-    id 'org.springframework.boot' version '2.4.5'
+    id 'org.springframework.boot' version '2.4.5' apply false
+    id 'io.spring.dependency-management' version '1.1.4'
     id "io.freefair.lombok" version "5.2.1"
     id 'maven-publish'
 }
@@ -11,21 +12,23 @@ repositories {
     mavenCentral()
 }
 
-bootJar {
-    enabled = false
-}
-
 jar {
     enabled = true
 }
 
-dependencies {
-    api group: 'org.springframework.boot', name: 'spring-boot-starter', version: '2.+'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-web', version: '2.+'
-    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket', version: '2.+'
+dependencyManagement {
+    imports {
+        mavenBom org.springframework.boot.gradle.plugin.SpringBootPlugin.BOM_COORDINATES
+    }
+}
 
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test', version: '2.+'
-    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security', version: '2.+'
+dependencies {
+    api group: 'org.springframework.boot', name: 'spring-boot-starter', version: "[2.0, 3.0)"
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-web', version: "[2.0, 3.0)"
+    api group: 'org.springframework.boot', name: 'spring-boot-starter-websocket', version: "[2.0, 3.0)"
+
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-test'
+    testImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security'
     testImplementation group: 'org.awaitility', name: 'awaitility', version: '4.0.3'
 }
 
