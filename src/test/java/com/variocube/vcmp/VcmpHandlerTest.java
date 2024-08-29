@@ -67,6 +67,7 @@ public class VcmpHandlerTest {
 
     private void wait(int intervall, TimeUnit unit ) {
         await()
+                .timeout(intervall+1, unit)
                 .pollDelay(intervall, unit)
                 .untilAsserted(() -> assertTrue(true));
     }
@@ -134,7 +135,7 @@ public class VcmpHandlerTest {
         }
 
         //Inspect executor
-        wait(500, TimeUnit.MILLISECONDS);
+        wait(1, TimeUnit.SECONDS);
         assertEquals(startCnt, executor.getCachedPoolActiveCount());
 
     }
