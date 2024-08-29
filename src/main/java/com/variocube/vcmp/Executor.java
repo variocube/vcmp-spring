@@ -2,10 +2,7 @@ package com.variocube.vcmp;
 
 import lombok.val;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -32,7 +29,7 @@ public class Executor {
 
     private Executor() {
         this.scheduledThreadPool = Executors.newScheduledThreadPool(Runtime.getRuntime().availableProcessors(), this::schedulerThreadFactory);
-        this.cachedThreadPool = Executors.newCachedThreadPool(this::workerThreadFactory);
+        this.cachedThreadPool = Executors.newFixedThreadPool(10, this::workerThreadFactory);
     }
 
     private Thread schedulerThreadFactory(Runnable r) {
@@ -57,6 +54,15 @@ public class Executor {
         // not allocate additional threads. Therefore, long-running tasks would
         // interfere with scheduling.
         this.scheduledThreadPool.schedule(() -> submit(runnable), delay, timeUnit);
+    }
+
+    AtomicInteger getNumWorkers() {
+
+        return numWorkers;
+    }
+
+    int getCachedPoolActiveCount() {
+        return ((ThreadPoolExecutor) cachedThreadPool).getActiveCount();
     }
 
 }

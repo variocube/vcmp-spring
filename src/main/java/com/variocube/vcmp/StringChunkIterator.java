@@ -19,6 +19,9 @@ public class StringChunkIterator implements Iterator<String> {
 
     @Override
     public String next() {
+        if (chunkSize<=0) {
+            throw new RuntimeException(String.format("Bad chunkSize - %s", chunkSize));
+        }
         val chunk = text.substring(start, Math.min(text.length(), start + chunkSize));
         start += chunkSize;
         return chunk;

@@ -79,7 +79,8 @@ public class VcmpSession {
     }
 
     void handleHeartbeatReceived(VcmpFrame heartbeat) {
-        log.debug("Received heartbeat in session {} of {}ms", getId(), heartbeat.getHeartbeatInterval());
+        if (log.isDebugEnabled())
+            log.debug("Received heartbeat in session {} of {}ms", getId(), heartbeat.getHeartbeatInterval());
 
         // make sure to process only one heartbeat during a waiting window
         // if we await a heartbeat, process it and atomically set the flag to false,
@@ -94,7 +95,8 @@ public class VcmpSession {
     private void sendHeartbeat(VcmpFrame heartbeat) {
         try {
             if (this.isOpen()) {
-                log.debug("Sending heartbeat in session {} of {}ms", getId(), heartbeat.getHeartbeatInterval());
+                if (log.isDebugEnabled())
+                    log.debug("Sending heartbeat in session {} of {}ms", getId(), heartbeat.getHeartbeatInterval());
 
                 // send the frame
                 this.sendFrame(heartbeat);
@@ -146,8 +148,12 @@ public class VcmpSession {
      */
     void sendFrame(VcmpFrame frame) throws IOException {
         if (this.webSocketSession.isOpen()) {
-            log.trace("Sending frame {}", frame);
+            if (log.isTraceEnabled())
+                log.trace("Sending frame {}", frame);
 
+            if (webSocketSession.getTextMessageSizeLimit()<=0) {
+                throw new IOException("Invalid webSocketSession.getTextMessageSizeLimit() - " + webSocketSession.getTextMessageSizeLimit());
+            }
             val it = new StringChunkIterator(frame.serialize(), webSocketSession.getTextMessageSizeLimit());
 
             // Acquire lock
@@ -162,7 +168,8 @@ public class VcmpSession {
 
             // Send chunks
             try {
-                log.trace("Acquired send lock. Start sending chunks...");
+                if (log.isTraceEnabled())
+                    log.trace("Acquired send lock. Start sending chunks...");
                 while (it.hasNext()) {
                     val message = new TextMessage(it.next(), !it.hasNext());
                     log.trace("Sending chunk {}", message);
@@ -178,8 +185,8 @@ public class VcmpSession {
                 // Make sure to release lock in any case
                 sendLock.unlock();
             }
-
-            log.trace("Finished sending frame {}", frame);
+            if (log.isTraceEnabled())
+                log.trace("Finished sending frame {}", frame);
         }
         else {
             throw new IOException("Session already closed.");

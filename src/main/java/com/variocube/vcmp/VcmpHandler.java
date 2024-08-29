@@ -279,4 +279,12 @@ public final class VcmpHandler implements WebSocketHandler {
     String serializeMessage(VcmpMessage message) throws JsonProcessingException {
         return objectMapper.writeValueAsString(message);
     }
+
+    ObjectMapper getObjectMapper() {
+        return objectMapper;
+    }
+    ConcurrentHashMap<String, VcmpSession> getSessions() {
+        return sessions;
+    }
+
 }
