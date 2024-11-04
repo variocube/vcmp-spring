@@ -4,9 +4,6 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/com.variocube.vcmp.main.iml" filepath="$PROJECT_DIR$/.idea/modules/com.variocube.vcmp.main.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/com.variocube.vcmp.test.iml" filepath="$PROJECT_DIR$/.idea/modules/com.variocube.vcmp.test.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/vcmp-spring.iml" filepath="$PROJECT_DIR$/.idea/vcmp-spring.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/modules/vcmp.main.iml" filepath="$PROJECT_DIR$/.idea/modules/vcmp.main.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/modules/vcmp.test.iml" filepath="$PROJECT_DIR$/.idea/modules/vcmp.test.iml" />
     </modules>
   </component>
 </project>

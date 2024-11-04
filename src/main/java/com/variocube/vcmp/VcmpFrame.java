@@ -3,9 +3,9 @@ package com.variocube.vcmp;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.Value;
-import org.springframework.util.Base64Utils;
 
 import java.security.SecureRandom;
+import java.util.Base64;
 
 @Value
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
@@ -77,7 +77,7 @@ class VcmpFrame {
     private static String generateId() {
         byte[] randomBytes = new byte[ID_BYTES];
         random.nextBytes(randomBytes);
-        String id = Base64Utils.encodeToUrlSafeString(randomBytes);
+        String id = Base64.getUrlEncoder().encodeToString(randomBytes);
         assert id.length() == ID_LENGTH;
         return id;
     }
