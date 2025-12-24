@@ -4,6 +4,7 @@ import com.variocube.vcmp.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 
 import java.io.IOException;
 
@@ -23,11 +24,15 @@ public class BasicVcmpClient {
         this.session = session;
     }
 
-    public VcmpCallback send(VcmpMessage message) throws IOException {
+    public VcmpCallback<Void> send(VcmpMessage message) throws IOException {
+        return send(message, Void.class);
+    }
+
+    public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) throws IOException {
         if (session == null) {
             throw new IOException("Not connected.");
         }
-        return this.session.send(message);
+        return this.session.send(message, resultClass);
     }
 
     public void send(VcmpMessage message, Runnable ack) throws IOException {
@@ -38,7 +43,9 @@ public class BasicVcmpClient {
         if (session == null) {
             throw new IOException("Not connected.");
         }
-        this.session.send(message, ack, nak);
+        val callback = this.send(message);
+        callback.onAck(ack);
+        callback.onNak(nak);
     }
 
     public boolean isConnected() {

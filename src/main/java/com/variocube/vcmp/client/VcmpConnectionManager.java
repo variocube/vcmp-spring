@@ -10,8 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 import org.apache.tomcat.websocket.Constants;
 import org.apache.tomcat.websocket.WsWebSocketContainer;
-import org.springframework.lang.Nullable;
-import org.springframework.util.concurrent.ListenableFutureCallback;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
@@ -23,6 +21,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -36,9 +35,9 @@ public class VcmpConnectionManager implements Closeable {
      * an exception will be thrown when sending a message.
      */
     /**
-     * Send timeout for a message part (web socket frame) in seconds.
+     * Send timeout for a message part (web socket frame) in milliseconds.
      */
-    private static final long SEND_TIMEOUT = 10 * 1000; // 10 seconds
+    private static final long SEND_TIMEOUT = 10_000L; // 10 seconds
 
     /**
      * Buffer size for text messages.
@@ -49,7 +48,7 @@ public class VcmpConnectionManager implements Closeable {
     /**
      * Default minimum timeout before reconnecting after the connection was closed in seconds.
      */
-    static final long DEFAULT_RECONNECT_TIMEOUT_MIN_SECONDS = 10;
+    static final long DEFAULT_RECONNECT_TIMEOUT_MIN_SECONDS = 10L;
 
     /**
      * Default minimum timeout before reconnecting after the connection was closed as a Duration.
@@ -74,11 +73,16 @@ public class VcmpConnectionManager implements Closeable {
     static final long DEFAULT_DISCONNECT_TIMEOUT_SECONDS = 10;
 
     /**
-     * Default timeout after a disconnect as a Duration.
+     * Default timeout after a disconnect as a `Duration`.
      */
     static final Duration DEFAULT_DISCONNECT_TIMEOUT = Duration.ofSeconds(DEFAULT_DISCONNECT_TIMEOUT_SECONDS);
 
-    private static final long MAX_SESSION_IDLE_TIMEOUT = 60 * 1000; // 60 seconds
+    /**
+     * The maximum session idle timeout in milliseconds.
+     */
+    private static final long MAX_SESSION_IDLE_TIMEOUT = 60_1000; // 60 seconds
+
+    private static final Random RANDOM = new Random();
 
     private final StandardWebSocketClient webSocketClient;
     private final WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
@@ -152,8 +156,8 @@ public class VcmpConnectionManager implements Closeable {
         webSocketSession = null;
         if (this.isRunning) {
             val baseDelay = afterDisconnect ? disconnectTimeout : Duration.ZERO;
-            val randomDelay = Duration.ofMillis((long) (Math.random() * reconnectTimeoutMax.minus(reconnectTimeoutMin).toMillis()));
-            val reconnectTimeoutMs = baseDelay.plus(reconnectTimeoutMin).plus(randomDelay).toMillis();
+            val randomDelay = Duration.ofMillis(RANDOM.nextLong(reconnectTimeoutMin.toMillis(), reconnectTimeoutMax.toMillis() + 1));
+            val reconnectTimeoutMs = baseDelay.plus(randomDelay).toMillis();
             log.info("Scheduling reconnect in {} ms", reconnectTimeoutMs);
             try {
                 Executor.getExecutor().schedule(this::openSession, reconnectTimeoutMs, TimeUnit.MILLISECONDS);
@@ -168,27 +172,23 @@ public class VcmpConnectionManager implements Closeable {
         if (this.isRunning) {
             log.info("Initiate handshake with {}", this.uri);
             // shake them hands...
-            webSocketClient.doHandshake(this.vcmpHandler, this.headers, this.uri)
-                    .addCallback(new ListenableFutureCallback<>() {
-                        @Override
-                        public void onSuccess(@Nullable WebSocketSession result) {
-                            log.info("Connection established.");
-                            webSocketSession = result;
-                            connectionError = null;
+            webSocketClient.execute(this.vcmpHandler, this.headers, this.uri)
+                    .thenAccept(session -> {
+                        log.info("Connection established.");
+                        webSocketSession = session;
+                        connectionError = null;
+                    })
+                    .exceptionally(ex -> {
+                        // Repeated connect failures are logged as warnings without a stack trace.
+                        if (connectionError == null) {
+                            log.error("Failed to connect", ex);
                         }
-
-                        @Override
-                        public void onFailure(Throwable ex) {
-                            // Repeated connect failures are logged as warnings without a stack trace.
-                            if (connectionError == null) {
-                                log.error("Failed to connect", ex);
-                            }
-                            else {
-                                log.warn("Failed to connect");
-                            }
-                            connectionError = ex;
-                            scheduleReconnect(false);
+                        else {
+                            log.warn("Failed to connect");
                         }
+                        connectionError = ex;
+                        scheduleReconnect(false);
+                        return null;
                     });
         }
     }

@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.http.ProblemDetail;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -26,18 +27,18 @@ import java.util.concurrent.locks.ReentrantLock;
 public class VcmpSession {
 
     /**
-     * The timeout to wait for acquiring the send lock in seconds.
-     *
+     * The timeout to wait for acquiring the `send`-lock in seconds.
+     * <p>
      * This needs to account for sending big messages on slow networks.
      * However, it should be small enough that we see frames rejected because
      * another sender holds the lock too long.
      */
-    private final static int SEND_LOCK_TIMEOUT = 30;
+    private static final int SEND_LOCK_TIMEOUT = 30;
 
     private final WebSocketSession webSocketSession;
     private final VcmpHandler vcmpHandler;
 
-    private final ConcurrentHashMap<String, VcmpCallback> callbacks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, VcmpCallback<?>> callbacks = new ConcurrentHashMap<>();
     private final ReentrantLock sendLock = new ReentrantLock();
 
     private Instant lastHeartbeatReceived;
@@ -51,27 +52,16 @@ public class VcmpSession {
     @Getter(AccessLevel.PACKAGE)
     private final MessageBuffer messageBuffer = new MessageBuffer();
 
-    public VcmpCallback send(VcmpMessage message) throws IOException {
+    public VcmpCallback<Void> send(VcmpMessage message) throws IOException {
+        return send(message, Void.class);
+    }
+
+    public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) throws IOException {
         VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
-        VcmpCallback callback = new VcmpCallback();
+        VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
         callbacks.put(vcmpFrame.getId(), callback);
         sendFrame(vcmpFrame);
         return callback;
-    }
-
-    public void send(VcmpMessage message, Runnable ack, Runnable nak) throws IOException {
-        VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
-        if (ack != null || nak != null) {
-            VcmpCallback callback = new VcmpCallback();
-            if (ack != null) {
-                callback.onAck(ack);
-            }
-            if (nak != null) {
-                callback.onNak(nak);
-            }
-            callbacks.put(vcmpFrame.getId(), callback);
-        }
-        sendFrame(vcmpFrame);
     }
 
     public void initiateHeartbeat(int intervalMillis) {
@@ -222,20 +212,20 @@ public class VcmpSession {
         return webSocketSession.isOpen();
     }
 
-    void notifyNak(String id) {
+    void notifyNak(String id, ProblemDetail problemDetail) {
         Optional.ofNullable(callbacks.remove(id))
-                .ifPresent(VcmpCallback::notifyNak);
+                .ifPresent(callback -> callback.notifyNak(problemDetail));
     }
 
-    void notifyAck(String id) {
+    void notifyAck(String id, String resultPayload) {
         Optional.ofNullable(callbacks.remove(id))
-                .ifPresent(VcmpCallback::notifyAck);
+                .ifPresent(callback -> callback.notifyAckRaw(resultPayload));
     }
 
     @Override
     public boolean equals(Object obj) {
-        if (obj instanceof VcmpSession) {
-            return Objects.equals(this.getId(), ((VcmpSession)obj).getId());
+        if (obj instanceof VcmpSession otherSession) {
+            return Objects.equals(this.getId(), otherSession.getId());
         }
         return false;
     }
@@ -244,5 +234,4 @@ public class VcmpSession {
     public int hashCode() {
         return this.getId().hashCode();
     }
-
 }

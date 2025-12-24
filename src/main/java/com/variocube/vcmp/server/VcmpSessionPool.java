@@ -7,10 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
@@ -26,8 +23,8 @@ public class VcmpSessionPool {
         sessions.remove(session);
     }
 
-    public VcmpCallback broadcast(VcmpMessage message) {
-        val callbacks = new ArrayList<VcmpCallback>();
+    public VcmpCallback<Collection<Void>> broadcast(VcmpMessage message) {
+        val callbacks = new ArrayList<VcmpCallback<Void>>();
         for (VcmpSession session : getOpenSessions()) {
             try {
                 callbacks.add(session.send(message));
@@ -38,7 +35,7 @@ public class VcmpSessionPool {
         return VcmpCallback.all(callbacks);
     }
 
-    public VcmpCallback send(String recipient, VcmpMessage message) throws IOException {
+    public VcmpCallback<Void> send(String recipient, VcmpMessage message) throws IOException {
         for (VcmpSession session : getOpenSessions()) {
             if (session.hasUsername(recipient)) {
                 try {
