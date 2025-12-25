@@ -3,6 +3,7 @@ package com.variocube.vcmp.chat;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.VcmpConnectionManager;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -12,10 +13,13 @@ import static com.variocube.vcmp.SecurityConfiguration.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-public class ChatTest extends VcmpTestBase {
+class ChatTest extends VcmpTestBase {
+
+    @Autowired
+    private ChatEndpoint endpoint;
 
     @Test
-    public void canChat() throws IOException {
+    void canChat() throws IOException {
 
         ChatClient alice = new ChatClient(ALICE_USERNAME, ALICE_PASSWORD, Collections.singletonList("flowers"));
         ChatClient bob = new ChatClient(BOB_USERNAME, BOB_PASSWORD, Collections.emptyList());
@@ -28,6 +32,10 @@ public class ChatTest extends VcmpTestBase {
 
             await().until(alice::isConnected);
             await().until(bob::isConnected);
+
+            // Assert that the endpoint has sessions
+            assertThat(endpoint.getSessionPool().hasSession(ALICE_USERNAME)).isTrue();
+            assertThat(endpoint.getSessionPool().hasSession(BOB_USERNAME)).isTrue();
 
             //
             // Assert that the callback only returns when alice received the message
@@ -46,6 +54,12 @@ public class ChatTest extends VcmpTestBase {
             AtomicBoolean nak = new AtomicBoolean(false);
             bob.send(new ChatMessage("alice", "I will bring you flowers!"), null, () -> nak.set(true));
             await().untilTrue(nak);
+
+            // Send a broadcast message to both clients
+            endpoint.broadcast(new ChatMessage("everyone", "Hello everyone!"))
+                    .awaitSeconds(1);
+            assertThat(bob.getReceived()).hasSize(1);
+            assertThat(alice.getReceived()).hasSize(2);
 
         }
     }

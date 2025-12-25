@@ -5,10 +5,7 @@ import lombok.val;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import java.io.IOException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -19,10 +16,14 @@ class Echo2Test extends VcmpTestBase {
     private Echo2Client client;
 
     @Test
-    void canEcho() throws IOException, ExecutionException, InterruptedException, TimeoutException {
+    void canEcho() {
         await().until(client::isConnected);
         val response = client.send(new EchoRequest("bar"), EchoResponse.class)
                         .await(100, TimeUnit.MILLISECONDS);
         assertThat(response.getMessage()).isEqualTo("bar");
+
+        val response2 = client.send(new EchoRequest("foo"), EchoResponse.class)
+                        .awaitSeconds(1);
+        assertThat(response2.getMessage()).isEqualTo("foo");
     }
 }

@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
+import static com.variocube.vcmp.VcmpHandler.createProblemDetail;
+
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
 @Slf4j
 public class VcmpSession {
@@ -52,16 +54,21 @@ public class VcmpSession {
     @Getter(AccessLevel.PACKAGE)
     private final MessageBuffer messageBuffer = new MessageBuffer();
 
-    public VcmpCallback<Void> send(VcmpMessage message) throws IOException {
+    public VcmpCallback<Void> send(VcmpMessage message) {
         return send(message, Void.class);
     }
 
-    public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) throws IOException {
-        VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
-        VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
-        callbacks.put(vcmpFrame.getId(), callback);
-        sendFrame(vcmpFrame);
-        return callback;
+    public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) {
+        try {
+            VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
+            VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
+            callbacks.put(vcmpFrame.getId(), callback);
+            sendFrame(vcmpFrame);
+            return callback;
+        }
+        catch (IOException e) {
+            return VcmpCallback.failed(createProblemDetail(e));
+        }
     }
 
     public void initiateHeartbeat(int intervalMillis) {
@@ -111,7 +118,7 @@ public class VcmpSession {
                             }
                         }
                     }
-                }, heartbeat.getHeartbeatInterval() * 2, TimeUnit.MILLISECONDS);
+                }, heartbeat.getHeartbeatInterval() * 2L, TimeUnit.MILLISECONDS);
             }
         }
         catch (IOException e) {
@@ -147,6 +154,7 @@ public class VcmpSession {
                 }
             }
             catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 throw new IOException("Thread was interrupted while acquiring lock.");
             }
 

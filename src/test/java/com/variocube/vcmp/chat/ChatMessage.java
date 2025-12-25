@@ -6,7 +6,7 @@ import lombok.Value;
 
 @Value
 @JsonTypeName("CascadeMessage")
-class ChatMessage implements VcmpMessage {
+public class ChatMessage implements VcmpMessage {
     String recipient;
     String message;
 }

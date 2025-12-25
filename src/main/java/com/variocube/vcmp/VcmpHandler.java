@@ -285,7 +285,7 @@ public final class VcmpHandler implements WebSocketHandler {
         return objectMapper.writeValueAsString(message);
     }
 
-    ProblemDetail createProblemDetail(Throwable throwable) {
+    static ProblemDetail createProblemDetail(Throwable throwable) {
         if (throwable instanceof ErrorResponseException errorResponseException) {
             return errorResponseException.getBody();
         }

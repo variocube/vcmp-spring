@@ -7,11 +7,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static com.variocube.vcmp.ObjectMapperHolder.OBJECT_MAPPER;
@@ -19,6 +21,8 @@ import static org.springframework.util.StringUtils.hasText;
 
 @Slf4j
 public class VcmpCallback<T> {
+
+    private static final int DEFAULT_TIMEOUT_SECONDS = 20;
 
     private enum State {
         PENDING,
@@ -118,35 +122,33 @@ public class VcmpCallback<T> {
     }
 
     /**
-     * Awaits an ACK or NAK response to the message. Returns on ACK, or throws an exception on NAK.
-     * WARNING: this blocks the current thread, possibly indefinitely.
-     * @deprecated Because this may block the current thread indefinitely.
-     * use await(long timeout, TimeUnit unit) instead.
+     * Awaits a result or an error to the message using the default timeout of 20 seconds.
+     *
+     * @throws ErrorResponseException if the operation fails.
+     * @return The result of the operation.
      */
-    @Deprecated(forRemoval = true)
-    public T await() throws ErrorResponseException {
-        try {
-            return toCompletableFuture().join();
-        }
-        catch (CompletionException e) {
-            // extract error response exception from CompletionException
-            if (e.getCause() instanceof ErrorResponseException errorResponseException) {
-                throw errorResponseException;
-            }
-            throw e;
-        }
+    public T await() {
+        return await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /**
-     * Awaits an ACK or NAK response to the message for at max `timeout` `unit`.
-     * Returns on ACK, or throws an exception on NAK, or when the timeout elapsed.
+     * Awaits a result or an error to the message for at most `seconds` seconds.
+     * @param seconds The timeout in seconds.
+     * @throws ErrorResponseException if the operation fails.
+     * @return The result of the operation.
+     */
+    public T awaitSeconds(int seconds) {
+        return await(seconds, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Awaits a result or an error to the message for the specified timeout.
      * @param timeout The timeout
      * @param unit The unit the timeout is specified in.
-     * @throws InterruptedException
-     * @throws ExecutionException
-     * @throws TimeoutException
+     * @throws ErrorResponseException if the operation fails.
+     * @return The result of the operation.
      */
-    public T await(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+    public T await(long timeout, TimeUnit unit) {
         try {
             return toCompletableFuture().get(timeout, unit);
         }
@@ -155,7 +157,14 @@ public class VcmpCallback<T> {
             if (cause instanceof ErrorResponseException errorResponseException) {
                 throw errorResponseException;
             }
-            throw e;
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected error while waiting for response.", cause);
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.REQUEST_TIMEOUT, "Interrupted while waiting for response.");
+        }
+        catch (TimeoutException e) {
+            throw new ResponseStatusException(HttpStatus.REQUEST_TIMEOUT, "Timeout while waiting for response.");
         }
     }
 
@@ -199,6 +208,20 @@ public class VcmpCallback<T> {
                 }
             });
             callback.onNak(combined::notifyNak);
+        }
+        return combined;
+    }
+
+    public static <T> VcmpCallback<T> any(Collection<VcmpCallback<T>> callbacks) {
+        val combined = new VcmpCallback<T>();
+        val errors = new AtomicInteger();
+        for (val callback : callbacks) {
+            callback.onAck(combined::notifyAck);
+            callback.onNak(error -> {
+                if (errors.incrementAndGet() == callbacks.size()) {
+                    combined.notifyNak(error);
+                }
+            });
         }
         return combined;
     }
