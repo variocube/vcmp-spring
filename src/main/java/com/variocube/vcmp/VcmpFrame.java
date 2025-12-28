@@ -55,12 +55,12 @@ class VcmpFrame {
         }
     }
 
-    static VcmpFrame createAck(String id) {
-        return new VcmpFrame(Type.ACK, id, null, null);
+    static VcmpFrame createAck(String id, String payload) {
+        return new VcmpFrame(Type.ACK, id, payload, null);
     }
 
-    static VcmpFrame createNak(String id) {
-        return new VcmpFrame(Type.NAK, id, null, null);
+    static VcmpFrame createNak(String id, String payload) {
+        return new VcmpFrame(Type.NAK, id, payload, null);
     }
 
     static VcmpFrame createMessage(String payload) {

@@ -1,15 +1,18 @@
 package com.variocube.vcmp;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.socket.*;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.HashMap;
@@ -17,6 +20,9 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
+
+import static com.variocube.vcmp.ObjectMapperHolder.createObjectMapper;
+import static org.springframework.util.StringUtils.hasText;
 
 @Slf4j
 public final class VcmpHandler implements WebSocketHandler {
@@ -42,12 +48,6 @@ public final class VcmpHandler implements WebSocketHandler {
         this.listeners.keySet().forEach(objectMapper::registerSubtypes);
     }
 
-    public static ObjectMapper createObjectMapper() {
-        return new ObjectMapper()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .registerModule(new JavaTimeModule());
-    }
-
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket session opened: {}", session.getId());
@@ -59,7 +59,7 @@ public final class VcmpHandler implements WebSocketHandler {
             try {
                 MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionConnected.class, vcmpSession);
             }
-            catch (Throwable e) {
+            catch (Exception e) {
                 log.error("Could not invoke connect handler", e);
             }
         });
@@ -71,7 +71,7 @@ public final class VcmpHandler implements WebSocketHandler {
         try {
             MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionDisconnected.class, sessions.remove(session.getId()));
         }
-        catch (Throwable e) {
+        catch (Exception e) {
             log.error("Could not invoke disconnect handler", e);
         }
 
@@ -89,8 +89,8 @@ public final class VcmpHandler implements WebSocketHandler {
 
         VcmpSession vcmpSession = getSession(session);
         if (vcmpSession != null) {
-            if (message instanceof TextMessage) {
-                handleTextMessage(vcmpSession, (TextMessage) message);
+            if (message instanceof TextMessage textMessage) {
+                handleTextMessage(vcmpSession, textMessage);
             }
             else if (message instanceof BinaryMessage) {
                 log.warn("Received binary message. This is unsupported.");
@@ -135,11 +135,11 @@ public final class VcmpHandler implements WebSocketHandler {
             switch (frame.getType()) {
                 case ACK:
                     log.debug("Received ACK for {}.", frame.getId());
-                    session.notifyAck(frame.getId());
+                    session.notifyAck(frame.getId(), frame.getPayload());
                     break;
                 case NAK:
                     log.debug("Received NAK for {}.", frame.getId());
-                    session.notifyNak(frame.getId());
+                    session.notifyNak(frame.getId(), parseProblemDetail(frame.getPayload()));
                     break;
                 case MSG:
                     handleMessagePayload(session, frame.getId(), frame.getPayload());
@@ -159,7 +159,7 @@ public final class VcmpHandler implements WebSocketHandler {
             VcmpMessage message = objectMapper.readValue(messagePayload, VcmpMessage.class);
             Object returnValue = invokeListener(session, message);
 
-            VcmpCallback callback = Optional.ofNullable(returnValue)
+            VcmpCallback<?> callback = Optional.ofNullable(returnValue)
                     .filter(VcmpCallback.class::isInstance)
                     .map(VcmpCallback.class::cast)
                     .orElse(null);
@@ -170,35 +170,40 @@ public final class VcmpHandler implements WebSocketHandler {
                     .orElse(null);
 
             if (callback != null) {
-                callback.onAck(() -> ack(session, messageId));
-                callback.onNak(() -> nak(session, messageId));
+                callback.onAck(result -> ack(session, messageId, result));
+                callback.onNak(error -> nak(session, messageId, error));
             }
             else if (completableFuture != null) {
-                completableFuture.thenRun(() -> ack(session, messageId))
-                        .exceptionally((error) -> {
+                completableFuture.thenAccept(result -> ack(session, messageId, result))
+                        .exceptionally(error -> {
                             log.info("Handler failed with exception. Sending NAK.", error);
-                            nak(session, messageId);
+                            nak(session, messageId, createProblemDetail(error));
                             return null;
                         });
             }
             else {
                 // No callback provided. That means the listener succeeded synchronously.
-                ack(session, messageId);
+                ack(session, messageId, returnValue);
             }
+        }
+        catch (InvocationTargetException ex) {
+            log.error("Error invoking listener", ex);
+            nak(session, messageId, createProblemDetail(ex.getCause()));
         }
         catch (Exception ex) {
             log.error("Error invoking listener", ex);
-            nak(session, messageId);
+            nak(session, messageId, createProblemDetail(ex));
         }
     }
 
-    private void nak(VcmpSession session, String messageId) {
+    private void nak(VcmpSession session, String messageId, ProblemDetail problemDetail) {
         if (session.isOpen()) {
             if (log.isTraceEnabled()) {
-                log.trace("Sending NAK for message: {}", messageId);
+                log.trace("Sending NAK for message {} with error {}", messageId, problemDetail);
             }
             try {
-                session.sendFrame(VcmpFrame.createNak(messageId));
+                val payload = objectMapper.writeValueAsString(problemDetail);
+                session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
             catch (IOException e) {
                 log.error("Error sending NAK", e);
@@ -206,13 +211,14 @@ public final class VcmpHandler implements WebSocketHandler {
         }
     }
 
-    private void ack(VcmpSession session, String messageId) {
+    private void ack(VcmpSession session, String messageId, Object result) {
         if (session.isOpen()) {
             if (log.isTraceEnabled()) {
                 log.trace("Sending ACK for message: {}", messageId);
             }
             try {
-                session.sendFrame(VcmpFrame.createAck(messageId));
+                val payload = objectMapper.writeValueAsString(result);
+                session.sendFrame(VcmpFrame.createAck(messageId, payload));
             }
             catch (IOException e) {
                 log.error("Error sending ACK", e);
@@ -220,10 +226,10 @@ public final class VcmpHandler implements WebSocketHandler {
         }
     }
 
-    private Object invokeListener(VcmpSession session, VcmpMessage message) throws Exception {
+    private Object invokeListener(VcmpSession session, VcmpMessage message) throws InvocationTargetException, IllegalAccessException {
         Method listener = this.listeners.get(message.getClass());
         if (listener == null) {
-            throw new Exception("Could not find listener for " + message.getClass().getSimpleName());
+            throw new IllegalStateException("Could not find listener for " + message.getClass().getSimpleName());
         }
         Parameter[] parameters = listener.getParameters();
         Object[] args = new Object[parameters.length];
@@ -275,8 +281,29 @@ public final class VcmpHandler implements WebSocketHandler {
         return this.sessions.get(webSocketSession.getId());
     }
 
-
     String serializeMessage(VcmpMessage message) throws JsonProcessingException {
         return objectMapper.writeValueAsString(message);
     }
+
+    static ProblemDetail createProblemDetail(Throwable throwable) {
+        if (throwable instanceof ErrorResponseException errorResponseException) {
+            return errorResponseException.getBody();
+        }
+        val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
+        problemDetail.setTitle("Message handling failed");
+        return problemDetail;
+    }
+
+    ProblemDetail parseProblemDetail(String payload) {
+        if (!hasText(payload)) {
+            return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Message handling failed.");
+        }
+        try {
+            return objectMapper.readValue(payload, ProblemDetail.class);
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to parse ProblemDetail from payload: {}", payload, e);
+            return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to parse ProblemDetail");
+        }
+    }
+
 }

@@ -1,12 +1,11 @@
-package com.variocube.vcmp.chat;
+package com.variocube.vcmp.echo2;
 
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.variocube.vcmp.VcmpMessage;
 import lombok.Value;
 
 @Value
-@JsonTypeName("CascadeMessage")
-public class ChatMessage implements VcmpMessage {
-    String recipient;
+@JsonTypeName("echo2:EchoRequest")
+public class EchoResponse implements VcmpMessage {
     String message;
 }

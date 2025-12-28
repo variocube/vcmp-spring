@@ -3,12 +3,16 @@ package com.variocube.vcmp;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Value;
+import lombok.val;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
 
-public class VcmpHandlerTest {
+import static com.variocube.vcmp.ObjectMapperHolder.createObjectMapper;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class VcmpHandlerTest {
 
     @Value
     @JsonTypeName("cube:BoxSnapshot")
@@ -26,24 +30,29 @@ public class VcmpHandlerTest {
     }
 
     @Test
-    public void objectMapperDoesntFailOnUnknownProperties() throws IOException {
-        ObjectMapper objectMapper = VcmpHandler.createObjectMapper();
+    void objectMapperDoesntFailOnUnknownProperties() throws IOException {
+        ObjectMapper objectMapper = createObjectMapper();
         objectMapper.registerSubtypes(BoxSnapshot.class);
 
-        BoxSnapshot boxSnapshot = (BoxSnapshot)objectMapper.readValue("{\n" +
-                "  \"@type\": \"cube:BoxSnapshot\",\n" +
-                "  \"boxes\": [\n" +
-                "    {\n" +
-                "      \"number\": \"1\",\n" +
-                "      \"description\": \"Box 1\",\n" +
-                "      \"lock\": \"1509000011_23\",\n" +
-                "      \"secondaryLock\": null,\n" +
-                "      \"types\": [\n" +
-                "        \"S\"\n" +
-                "      ],\n" +
-                "      \"unknownProperty\": \"that's dangerous!\"\n" +
-                "    }\n" +
-                "  ]\n" +
-                "}\n", VcmpMessage.class);
+        val json = """
+          {
+          "@type": "cube:BoxSnapshot",
+          "boxes": [
+            {
+              "number": "1",
+              "description": "Box 1",
+              "lock": "1509000011_23",
+              "secondaryLock": null,
+              "types": [
+                "S"
+              ],
+              "unknownProperty": "that's dangerous!"
+            }
+          ]
+        }""";
+
+        val boxSnapshot = (BoxSnapshot)objectMapper.readValue(json, VcmpMessage.class);
+
+        assertThat(boxSnapshot.getBoxes()).hasSize(1);
     }
 }
