@@ -202,7 +202,7 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending NAK for message {} with error {}", messageId, problemDetail);
             }
             try {
-                val payload = objectMapper.writeValueAsString(problemDetail);
+                val payload = problemDetail != null ? objectMapper.writeValueAsString(problemDetail) : null;
                 session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
             catch (IOException e) {
@@ -217,7 +217,7 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending ACK for message: {}", messageId);
             }
             try {
-                val payload = objectMapper.writeValueAsString(result);
+                val payload = result != null ? objectMapper.writeValueAsString(result) : null;
                 session.sendFrame(VcmpFrame.createAck(messageId, payload));
             }
             catch (IOException e) {
