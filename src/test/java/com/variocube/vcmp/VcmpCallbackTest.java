@@ -123,4 +123,19 @@ class VcmpCallbackTest {
         val exception = catchThrowableOfType(all::await, ErrorResponseException.class);
         assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
+
+    @Test
+    void canMapSync() {
+        val original = VcmpCallback.completed("foo");
+        val mapped = original.map(String::toUpperCase);
+        assertThat(mapped.await()).isEqualTo("FOO");
+    }
+
+    @Test
+    void canMapAsync() {
+        val original = new VcmpCallback<String>();
+        val mapped = original.map(String::toUpperCase);
+        new Thread(() -> original.notifyAck("foo")).start();
+        assertThat(mapped.await()).isEqualTo("FOO");
+    }
 }

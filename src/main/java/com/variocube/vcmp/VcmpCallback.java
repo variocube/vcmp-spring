@@ -15,6 +15,7 @@ import java.util.Collection;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static com.variocube.vcmp.ObjectMapperHolder.OBJECT_MAPPER;
 import static org.springframework.util.StringUtils.hasText;
@@ -166,6 +167,17 @@ public class VcmpCallback<T> {
         catch (TimeoutException e) {
             throw new ResponseStatusException(HttpStatus.REQUEST_TIMEOUT, "Timeout while waiting for response.");
         }
+    }
+
+    /**
+     * Maps the result of the callback to another value.
+     * @return A new callback with the mapped result.
+     */
+    public <U> VcmpCallback<U> map(Function<T, U> mapper) {
+        val callback = new VcmpCallback<U>();
+        this.onAck(originalResult -> callback.notifyAck(mapper.apply(originalResult)));
+        this.onNak(callback::notifyNak);
+        return callback;
     }
 
     public static VcmpCallback<Void> completed() {
