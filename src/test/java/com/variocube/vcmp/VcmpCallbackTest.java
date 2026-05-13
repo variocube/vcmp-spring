@@ -11,6 +11,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -137,5 +138,100 @@ class VcmpCallbackTest {
         val mapped = original.map(String::toUpperCase);
         new Thread(() -> original.notifyAck("foo")).start();
         assertThat(mapped.await()).isEqualTo("FOO");
+    }
+
+    @Test
+    void canMapWithNakHandlerSync() {
+        val seen = new AtomicReference<ProblemDetail>();
+        val original = VcmpCallback.<String>failed(ProblemDetail.forStatus(HttpStatus.CONFLICT));
+        val mapped = original.map(String::toUpperCase, seen::set);
+        val exception = catchThrowableOfType(mapped::await, ErrorResponseException.class);
+        assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(seen.get().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    @Test
+    void canMapWithNakHandlerForwardsAck() {
+        val seen = new AtomicReference<ProblemDetail>();
+        val original = VcmpCallback.completed("foo");
+        val mapped = original.map(String::toUpperCase, seen::set);
+        assertThat(mapped.await()).isEqualTo("FOO");
+        assertThat(seen.get()).isNull();
+    }
+
+    @Test
+    void canPeekAckSync() {
+        val seen = new AtomicReference<String>();
+        val peeked = VcmpCallback.completed("foo").peekAck(seen::set);
+        assertThat(peeked.await()).isEqualTo("foo");
+        assertThat(seen.get()).isEqualTo("foo");
+    }
+
+    @Test
+    void canPeekAckAsync() {
+        val seen = new AtomicReference<String>();
+        val original = new VcmpCallback<String>();
+        val peeked = original.peekAck(seen::set);
+        new Thread(() -> original.notifyAck("foo")).start();
+        assertThat(peeked.await()).isEqualTo("foo");
+        assertThat(seen.get()).isEqualTo("foo");
+    }
+
+    @Test
+    void peekAckDoesNotFireOnNak() {
+        val seen = new AtomicReference<String>();
+        val original = VcmpCallback.<String>failed(ProblemDetail.forStatus(HttpStatus.CONFLICT));
+        val peeked = original.peekAck(seen::set);
+        assertThatThrownBy(peeked::await).isInstanceOf(ErrorResponseException.class);
+        assertThat(seen.get()).isNull();
+    }
+
+    @Test
+    void canPeekNakSync() {
+        val seen = new AtomicReference<ProblemDetail>();
+        val original = VcmpCallback.<String>failed(ProblemDetail.forStatus(HttpStatus.CONFLICT));
+        val peeked = original.peekNak(seen::set);
+        val exception = catchThrowableOfType(peeked::await, ErrorResponseException.class);
+        assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(seen.get().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    @Test
+    void canPeekNakAsync() {
+        val seen = new AtomicReference<ProblemDetail>();
+        val original = new VcmpCallback<String>();
+        val peeked = original.peekNak(seen::set);
+        new Thread(() -> original.notifyNak(ProblemDetail.forStatus(HttpStatus.CONFLICT))).start();
+        val exception = catchThrowableOfType(peeked::await, ErrorResponseException.class);
+        assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(seen.get().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    @Test
+    void peekNakDoesNotFireOnAck() {
+        val seen = new AtomicReference<ProblemDetail>();
+        val peeked = VcmpCallback.completed("foo").peekNak(seen::set);
+        assertThat(peeked.await()).isEqualTo("foo");
+        assertThat(seen.get()).isNull();
+    }
+
+    /**
+     * Reproduces the scenario from issue #11: a listener returns a callback after attaching
+     * its own side effect via peekNak. The framework can still wire the terminal handler onto
+     * the returned callback because peek produces a fresh callback with empty handler slots.
+     */
+    @Test
+    void peekDoesNotCollideWithFrameworkHandler() {
+        val sideEffectFired = new AtomicReference<Boolean>(false);
+        val frameworkReceived = new AtomicReference<ProblemDetail>();
+        val original = new VcmpCallback<String>();
+        val returned = original.peekNak(error -> sideEffectFired.set(true));
+
+        // Simulate VcmpHandler.handleMessagePayload attaching the terminal handler.
+        assertThatNoException().isThrownBy(() -> returned.onNak(frameworkReceived::set));
+
+        original.notifyNak(ProblemDetail.forStatus(HttpStatus.CONFLICT));
+        assertThat(sideEffectFired.get()).isTrue();
+        assertThat(frameworkReceived.get().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
     }
 }

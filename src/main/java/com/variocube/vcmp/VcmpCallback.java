@@ -48,11 +48,11 @@ public class VcmpCallback<T> {
     public VcmpCallback() {
     }
 
-    public VcmpCallback<T> onAck(Runnable ack) {
+    VcmpCallback<T> onAck(Runnable ack) {
         return onAck(ignoredResult -> ack.run());
     }
 
-    public VcmpCallback<T> onAck(Consumer<T> ack) {
+    VcmpCallback<T> onAck(Consumer<T> ack) {
         // set the ACK handler only if execution is pending
         if (state == State.PENDING) {
             if (this.ack != null) {
@@ -69,11 +69,11 @@ public class VcmpCallback<T> {
         return this;
     }
 
-    public VcmpCallback<T> onNak(Runnable nak) {
+    VcmpCallback<T> onNak(Runnable nak) {
         return onNak(ignoredProblem -> nak.run());
     }
 
-    public VcmpCallback<T> onNak(Consumer<ProblemDetail> nak) {
+    VcmpCallback<T> onNak(Consumer<ProblemDetail> nak) {
         // set the NAK handler only if execution is pending
         if (state == State.PENDING) {
             if (this.nak != null) {
@@ -178,6 +178,60 @@ public class VcmpCallback<T> {
         this.onAck(originalResult -> callback.notifyAck(mapper.apply(originalResult)));
         this.onNak(callback::notifyNak);
         return callback;
+    }
+
+    /**
+     * Maps the result of the callback to another value and invokes a side effect on NAK.
+     * The error is propagated to the returned callback unchanged.
+     * @return A new callback with the mapped result.
+     */
+    public <U> VcmpCallback<U> map(Function<T, U> mapper, Consumer<ProblemDetail> nakHandler) {
+        val callback = new VcmpCallback<U>();
+        this.onAck(originalResult -> callback.notifyAck(mapper.apply(originalResult)));
+        this.onNak(error -> {
+            nakHandler.accept(error);
+            callback.notifyNak(error);
+        });
+        return callback;
+    }
+
+    /**
+     * Registers a side effect to be invoked on ACK without consuming the terminal handler slot.
+     * The result is propagated to the returned callback unchanged.
+     * @return A new callback that fires the side effect and forwards the result.
+     */
+    public VcmpCallback<T> peekAck(Consumer<T> sideEffect) {
+        return this.map(result -> {
+            sideEffect.accept(result);
+            return result;
+        });
+    }
+
+    /**
+     * Registers a side effect to be invoked on ACK without consuming the terminal handler slot.
+     * The result is propagated to the returned callback unchanged.
+     * @return A new callback that fires the side effect and forwards the result.
+     */
+    public VcmpCallback<T> peekAck(Runnable sideEffect) {
+        return peekAck(ignoredResult -> sideEffect.run());
+    }
+
+    /**
+     * Registers a side effect to be invoked on NAK without consuming the terminal handler slot.
+     * The error is propagated to the returned callback unchanged.
+     * @return A new callback that fires the side effect and forwards the error.
+     */
+    public VcmpCallback<T> peekNak(Consumer<ProblemDetail> sideEffect) {
+        return this.map(Function.identity(), sideEffect);
+    }
+
+    /**
+     * Registers a side effect to be invoked on NAK without consuming the terminal handler slot.
+     * The error is propagated to the returned callback unchanged.
+     * @return A new callback that fires the side effect and forwards the error.
+     */
+    public VcmpCallback<T> peekNak(Runnable sideEffect) {
+        return peekNak(ignoredProblem -> sideEffect.run());
     }
 
     public static VcmpCallback<Void> completed() {

@@ -39,9 +39,10 @@ public class BasicVcmpClient {
 
     public void send(VcmpMessage message, Runnable ack, Runnable nak) {
         assertSession();
-        val callback = this.send(message);
-        callback.onAck(ack);
-        callback.onNak(nak);
+        var callback = this.send(message).peekAck(ack);
+        if (nak != null) {
+            callback.peekNak(nak);
+        }
     }
 
     public boolean isConnected() {
