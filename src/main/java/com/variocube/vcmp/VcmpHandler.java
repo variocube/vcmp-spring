@@ -109,8 +109,10 @@ public final class VcmpHandler implements WebSocketHandler {
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
-        log.error("Transport error in session {}: {}", session.getId(), exception.getMessage());
-        log.debug("Full exception", exception);
+        // Transport errors are typically benign client disconnects (closed tab, dropped wifi,
+        // proxy timeout). Log at WARN with the throwable so the cause is visible when it
+        // matters, without paging on what is usually a normal lifecycle event.
+        log.warn("Transport error in session {}", session.getId(), exception);
         if (session.isOpen()) {
             session.close();
         }
