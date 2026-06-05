@@ -174,9 +174,22 @@ public class VcmpConnectionManager implements Closeable {
             // shake them hands...
             webSocketClient.execute(this.vcmpHandler, this.headers, this.uri)
                     .thenAccept(session -> {
-                        log.info("Connection established.");
-                        webSocketSession = session;
-                        connectionError = null;
+                        // The handshake completes asynchronously, so stop() may already have run by
+                        // the time we get here. Decide what to do under the same lock stop() uses:
+                        // if we are no longer running, closeSession() has already executed (and found
+                        // webSocketSession still null, closing nothing), so we must close this
+                        // freshly-established session ourselves — otherwise it leaks and stays open
+                        // until the JVM exits, stranding the peer as "connected".
+                        synchronized (this.lifecycleMonitor) {
+                            if (!this.isRunning) {
+                                log.info("Connection established after stop(); closing it to avoid leaking the session.");
+                                closeQuietly(session);
+                                return;
+                            }
+                            log.info("Connection established.");
+                            webSocketSession = session;
+                            connectionError = null;
+                        }
                     })
                     .exceptionally(ex -> {
                         // Repeated connect failures are logged as warnings without a stack trace.
@@ -196,6 +209,15 @@ public class VcmpConnectionManager implements Closeable {
     private void closeSession() throws IOException {
         if (this.webSocketSession != null) {
             this.webSocketSession.close();
+        }
+    }
+
+    private static void closeQuietly(WebSocketSession session) {
+        try {
+            session.close();
+        }
+        catch (IOException e) {
+            log.warn("Failed to close session established after stop()", e);
         }
     }
 
