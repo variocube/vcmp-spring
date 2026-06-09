@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static java.util.Collections.emptyList;
 import static org.assertj.core.api.Assertions.*;
 
 class VcmpCallbackTest {
@@ -92,6 +93,12 @@ class VcmpCallbackTest {
     void canAllImmediateAck() {
         val results = VcmpCallback.all(VcmpCallback.completed(), VcmpCallback.completed()).await();
         assertThat(results).containsExactly(null, null);
+    }
+
+    @Test
+    void canAllEmptyAcksImmediately() {
+        val results = VcmpCallback.<Void>all(emptyList()).await();
+        assertThat(results).isEmpty();
     }
 
     @Test

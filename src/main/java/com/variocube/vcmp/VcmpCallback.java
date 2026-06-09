@@ -266,6 +266,12 @@ public class VcmpCallback<T> {
     public static <T> VcmpCallback<Collection<T>> all(Collection<VcmpCallback<T>> callbacks) {
         val combined = new VcmpCallback<Collection<T>>();
         val results = new ArrayList<T>();
+        // With no callbacks there is nothing to wait for, so ack immediately with an empty result.
+        // Otherwise the combined callback would remain PENDING forever (no per-callback ack ever fires).
+        if (callbacks.isEmpty()) {
+            combined.notifyAck(results);
+            return combined;
+        }
         for (val callback : callbacks) {
             callback.onAck(result -> {
                 results.add(result);
