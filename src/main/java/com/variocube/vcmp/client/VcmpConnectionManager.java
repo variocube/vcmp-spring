@@ -80,7 +80,7 @@ public class VcmpConnectionManager implements Closeable {
     /**
      * The maximum session idle timeout in milliseconds.
      */
-    private static final long MAX_SESSION_IDLE_TIMEOUT = 60_1000; // 60 seconds
+    private static final long MAX_SESSION_IDLE_TIMEOUT = 60_000; // 60 seconds
 
     private static final Random RANDOM = new Random();
 
