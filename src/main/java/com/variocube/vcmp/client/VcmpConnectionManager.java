@@ -153,26 +153,36 @@ public class VcmpConnectionManager implements Closeable {
     }
 
     private void scheduleReconnect(boolean afterDisconnect) {
-        webSocketSession = null;
-        if (this.isRunning) {
-            val baseDelay = afterDisconnect ? disconnectTimeout : Duration.ZERO;
-            val randomDelay = Duration.ofMillis(RANDOM.nextLong(reconnectTimeoutMin.toMillis(), reconnectTimeoutMax.toMillis() + 1));
-            val reconnectTimeoutMs = baseDelay.plus(randomDelay).toMillis();
-            log.info("Scheduling reconnect in {} ms", reconnectTimeoutMs);
-            try {
-                Executor.getExecutor().schedule(this::openSession, reconnectTimeoutMs, TimeUnit.MILLISECONDS);
-            }
-            catch (Exception e) {
-                log.error("Could not schedule reconnect", e);
+        // isRunning and webSocketSession are guarded by lifecycleMonitor; read/write them under the
+        // same lock that start()/stop() use, so a reconnect triggered from a disconnect/executor
+        // thread can never observe a stale isRunning after stop() (JMM visibility) and never races
+        // a concurrent stop() between the check and scheduling.
+        synchronized (this.lifecycleMonitor) {
+            webSocketSession = null;
+            if (this.isRunning) {
+                val baseDelay = afterDisconnect ? disconnectTimeout : Duration.ZERO;
+                val randomDelay = Duration.ofMillis(RANDOM.nextLong(reconnectTimeoutMin.toMillis(), reconnectTimeoutMax.toMillis() + 1));
+                val reconnectTimeoutMs = baseDelay.plus(randomDelay).toMillis();
+                log.info("Scheduling reconnect in {} ms", reconnectTimeoutMs);
+                try {
+                    Executor.getExecutor().schedule(this::openSession, reconnectTimeoutMs, TimeUnit.MILLISECONDS);
+                }
+                catch (Exception e) {
+                    log.error("Could not schedule reconnect", e);
+                }
             }
         }
     }
 
     private void openSession() {
-        if (this.isRunning) {
-            log.info("Initiate handshake with {}", this.uri);
-            // shake them hands...
-            webSocketClient.execute(this.vcmpHandler, this.headers, this.uri)
+        // Hold lifecycleMonitor across the isRunning check and the handshake kick-off so stop()
+        // cannot land between them (check-then-act). webSocketClient.execute() submits the handshake
+        // to an async executor and returns immediately, so the lock is not held across blocking I/O.
+        synchronized (this.lifecycleMonitor) {
+            if (this.isRunning) {
+                log.info("Initiate handshake with {}", this.uri);
+                // shake them hands...
+                webSocketClient.execute(this.vcmpHandler, this.headers, this.uri)
                     .thenAccept(session -> {
                         // The handshake completes asynchronously, so stop() may already have run by
                         // the time we get here. Decide what to do under the same lock stop() uses:
@@ -203,6 +213,7 @@ public class VcmpConnectionManager implements Closeable {
                         scheduleReconnect(false);
                         return null;
                     });
+            }
         }
     }
 
