@@ -4,7 +4,9 @@ import com.variocube.vcmp.ClassUtils;
 import com.variocube.vcmp.VcmpHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
@@ -14,6 +16,7 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 @Configuration
 @Conditional(VcmpEndpointCondition.class)
@@ -22,11 +25,17 @@ import java.util.Map;
 @EnableWebSocket
 public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
 
+    static final int DEFAULT_CONNECT_CONCURRENCY = 8;
+
     private final ApplicationContext applicationContext;
     private final Environment environment;
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+        // Bound connect-handler concurrency across all endpoints of this application:
+        // they compete for the same resources (DB pool), so the bound must be shared.
+        Semaphore connectThrottle = createConnectThrottle();
+
         Map<String, Object> endpointBeans = applicationContext.getBeansWithAnnotation(VcmpEndpoint.class);
         for (Object endpoint : endpointBeans.values()) {
             Class<?> endpointClass = ClassUtils.getTargetClass(endpoint);
@@ -35,10 +44,29 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
             String path = environment.resolveRequiredPlaceholders(vcmpEndpoint.path());
             if (StringUtils.hasText(path)) {
                 log.info("Registering endpoint {} with {}", path, endpoint.getClass().getSimpleName());
-                registry.addHandler(new VcmpHandler(endpoint), path)
+                VcmpHandler handler = new VcmpHandler(endpoint);
+                handler.setConnectThrottle(connectThrottle);
+                registry.addHandler(handler, path)
                         .setAllowedOrigins("*");
             }
         }
+    }
+
+    private Semaphore createConnectThrottle() {
+        int connectConcurrency = environment.getProperty("vcmp.server.connect-concurrency",
+                Integer.class, DEFAULT_CONNECT_CONCURRENCY);
+        if (connectConcurrency <= 0) {
+            log.info("VCMP connect throttling is disabled.");
+            return null;
+        }
+        log.info("Bounding concurrent VCMP connect handlers to {}.", connectConcurrency);
+        return new Semaphore(connectConcurrency);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "vcmp.server.ready-gate.enabled", havingValue = "true", matchIfMissing = true)
+    public VcmpReadyGateFilter vcmpReadyGateFilter() {
+        return new VcmpReadyGateFilter();
     }
 
 }

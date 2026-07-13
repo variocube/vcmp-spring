@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.stream.Stream;
 
 import static com.variocube.vcmp.ObjectMapperHolder.createObjectMapper;
@@ -38,6 +39,15 @@ public final class VcmpHandler implements WebSocketHandler {
     @Setter
     private Runnable disconnectHandler;
 
+    /**
+     * Optional semaphore bounding how many connect handlers run concurrently. Connect handlers
+     * typically perform several DB operations; on a server, a fleet-wide reconnect storm would
+     * otherwise exhaust the DB pool (variocube/center#427). Shared across all handlers of an
+     * application so the bound covers all endpoints competing for the same resources.
+     */
+    @Setter
+    private Semaphore connectThrottle;
+
     public VcmpHandler(Object target) {
 
         this.target = target;
@@ -56,11 +66,20 @@ public final class VcmpHandler implements WebSocketHandler {
         sessions.put(session.getId(), vcmpSession);
 
         Executor.getExecutor().submit(() -> {
+            val throttle = this.connectThrottle;
+            if (throttle != null) {
+                throttle.acquireUninterruptibly();
+            }
             try {
                 MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionConnected.class, vcmpSession);
             }
             catch (Exception e) {
                 log.error("Could not invoke connect handler", e);
+            }
+            finally {
+                if (throttle != null) {
+                    throttle.release();
+                }
             }
         });
     }
