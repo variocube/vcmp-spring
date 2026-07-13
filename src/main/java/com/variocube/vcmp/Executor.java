@@ -38,12 +38,17 @@ public class Executor {
     private Thread schedulerThreadFactory(Runnable r) {
         val thread = Executors.defaultThreadFactory().newThread(r);
         thread.setName(String.format("VCMP-Scheduler-%s", numSchedulers.addAndGet(1)));
+        thread.setDaemon(true);
         return thread;
     }
 
     private Thread workerThreadFactory(Runnable r) {
         val thread = Executors.defaultThreadFactory().newThread(r);
         thread.setName(String.format("VCMP-Worker-%s", numWorkers.addAndGet(1)));
+        // Daemon: VCMP threads must never be the reason a JVM stays alive. With non-daemon
+        // threads, a failed application startup leaves a zombie process that a container
+        // restart policy cannot recover (variocube/center#427).
+        thread.setDaemon(true);
         return thread;
     }
 
