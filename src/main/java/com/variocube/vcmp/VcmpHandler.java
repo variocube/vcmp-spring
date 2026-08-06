@@ -87,8 +87,14 @@ public final class VcmpHandler implements WebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
         log.info("WebSocket session {} closed: {}", session.getId(), closeStatus);
+        val vcmpSession = sessions.remove(session.getId());
+        if (vcmpSession != null) {
+            // Fail pending callbacks first, so senders and chained ACKs on other
+            // sessions are notified before any disconnect handling runs.
+            vcmpSession.failPendingCallbacks();
+        }
         try {
-            MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionDisconnected.class, sessions.remove(session.getId()));
+            MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionDisconnected.class, vcmpSession);
         }
         catch (Exception e) {
             log.error("Could not invoke disconnect handler", e);

@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -37,6 +38,18 @@ public class VcmpSession {
      */
     private static final int SEND_LOCK_TIMEOUT = 30;
 
+    /**
+     * The timeout in seconds to wait for the acknowledgement of a sent message
+     * before its callback is failed with a NAK (status 504).
+     * <p>
+     * This bounds the chained-ACK path: a listener that returns a {@link VcmpCallback}
+     * defers the ACK of the incoming message until this callback completes. Without
+     * a timeout, a lost downstream ACK leaves every upstream hop pending forever.
+     * Must exceed the heartbeat round-trip so a healthy-but-slow peer is not cut off.
+     * Package-visible and mutable only so tests can shorten it.
+     */
+    static int ackTimeoutSeconds = 30;
+
     private final WebSocketSession webSocketSession;
     private final VcmpHandler vcmpHandler;
 
@@ -63,11 +76,46 @@ public class VcmpSession {
             VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
             VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
             callbacks.put(vcmpFrame.getId(), callback);
-            sendFrame(vcmpFrame);
+            try {
+                sendFrame(vcmpFrame);
+            }
+            catch (IOException e) {
+                callbacks.remove(vcmpFrame.getId());
+                throw e;
+            }
+            scheduleAckTimeout(vcmpFrame.getId());
             return callback;
         }
         catch (IOException e) {
             return VcmpCallback.failed(createProblemDetail(e));
+        }
+    }
+
+    private void scheduleAckTimeout(String id) {
+        val timeoutSeconds = ackTimeoutSeconds;
+        Executor.getExecutor().schedule(() -> {
+            if (callbacks.containsKey(id)) {
+                val problemDetail = ProblemDetail.forStatusAndDetail(
+                        HttpStatus.GATEWAY_TIMEOUT,
+                        String.format("The message was not acknowledged within %d seconds.", timeoutSeconds));
+                problemDetail.setTitle("Acknowledgement timeout");
+                notifyNak(id, problemDetail);
+            }
+        }, timeoutSeconds, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Fails all pending callbacks of this session with a NAK.
+     * Called when the underlying connection closes, so that senders and chained
+     * ACKs are notified instead of pending forever.
+     */
+    void failPendingCallbacks() {
+        val problemDetail = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "The session was closed before the message was acknowledged.");
+        problemDetail.setTitle("Session closed");
+        for (val id : callbacks.keySet()) {
+            notifyNak(id, problemDetail);
         }
     }
 
