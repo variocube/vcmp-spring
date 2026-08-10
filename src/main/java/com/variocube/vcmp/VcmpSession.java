@@ -38,18 +38,6 @@ public class VcmpSession {
      */
     private static final int SEND_LOCK_TIMEOUT = 30;
 
-    /**
-     * The timeout in seconds to wait for the acknowledgement of a sent message
-     * before its callback is failed with a NAK (status 504).
-     * <p>
-     * This bounds the chained-ACK path: a listener that returns a {@link VcmpCallback}
-     * defers the ACK of the incoming message until this callback completes. Without
-     * a timeout, a lost downstream ACK leaves every upstream hop pending forever.
-     * Must exceed the heartbeat round-trip so a healthy-but-slow peer is not cut off.
-     * Package-visible and mutable only so tests can shorten it.
-     */
-    static int ackTimeoutSeconds = 30;
-
     private final WebSocketSession webSocketSession;
     private final VcmpHandler vcmpHandler;
 
@@ -72,51 +60,59 @@ public class VcmpSession {
     }
 
     public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) {
+        VcmpFrame vcmpFrame;
         try {
-            VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
-            VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
-            callbacks.put(vcmpFrame.getId(), callback);
-            try {
-                sendFrame(vcmpFrame);
-            }
-            catch (IOException e) {
-                callbacks.remove(vcmpFrame.getId());
-                throw e;
-            }
-            scheduleAckTimeout(vcmpFrame.getId());
-            return callback;
+            vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
         }
         catch (IOException e) {
             return VcmpCallback.failed(createProblemDetail(e));
         }
-    }
 
-    private void scheduleAckTimeout(String id) {
-        val timeoutSeconds = ackTimeoutSeconds;
-        Executor.getExecutor().schedule(() -> {
-            if (callbacks.containsKey(id)) {
-                val problemDetail = ProblemDetail.forStatusAndDetail(
-                        HttpStatus.GATEWAY_TIMEOUT,
-                        String.format("The message was not acknowledged within %d seconds.", timeoutSeconds));
-                problemDetail.setTitle("Acknowledgement timeout");
-                notifyNak(id, problemDetail);
-            }
-        }, timeoutSeconds, TimeUnit.SECONDS);
+        VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
+        callbacks.put(vcmpFrame.getId(), callback);
+        try {
+            sendFrame(vcmpFrame);
+        }
+        catch (SessionClosedException e) {
+            callbacks.remove(vcmpFrame.getId());
+            return VcmpCallback.failed(sessionClosedProblemDetail(
+                    "Cannot send message: the session is already closed."));
+        }
+        catch (IOException e) {
+            callbacks.remove(vcmpFrame.getId());
+            return VcmpCallback.failed(createProblemDetail(e));
+        }
+        return callback;
     }
 
     /**
      * Fails all pending callbacks of this session with a NAK.
      * Called when the underlying connection closes, so that senders and chained
      * ACKs are notified instead of pending forever.
+     * <p>
+     * Note that this is the only mechanism that settles a pending callback without an
+     * ACK/NAK frame: VCMP itself does not bound how long a peer may take to acknowledge.
+     * Callers that need such a bound impose it themselves, e.g. via
+     * {@link VcmpCallback#awaitSeconds(int)}.
      */
     void failPendingCallbacks() {
-        val problemDetail = ProblemDetail.forStatusAndDetail(
-                HttpStatus.SERVICE_UNAVAILABLE,
+        val problemDetail = sessionClosedProblemDetail(
                 "The session was closed before the message was acknowledged.");
-        problemDetail.setTitle("Session closed");
         for (val id : callbacks.keySet()) {
             notifyNak(id, problemDetail);
         }
+    }
+
+    /**
+     * Creates the {@code 503 Session closed} problem detail used for every callback that fails
+     * because this session is gone. Matches the status the JS implementation reports for the same
+     * conditions (variocube/vcmp-js#32), so consumers can treat 503 uniformly as a retryable
+     * transport condition.
+     */
+    private static ProblemDetail sessionClosedProblemDetail(String detail) {
+        val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
+        problemDetail.setTitle("Session closed");
+        return problemDetail;
     }
 
     public void initiateHeartbeat(int intervalMillis) {
@@ -228,7 +224,17 @@ public class VcmpSession {
             log.trace("Finished sending frame {}", frame);
         }
         else {
-            throw new IOException("Session already closed.");
+            throw new SessionClosedException();
+        }
+    }
+
+    /**
+     * Signals that a frame could not be sent because the underlying session is already closed —
+     * as opposed to an error while sending on an open session.
+     */
+    static class SessionClosedException extends IOException {
+        SessionClosedException() {
+            super("Session already closed.");
         }
     }
 

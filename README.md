@@ -17,6 +17,28 @@ In order to test locally, you can publish a version to your local maven reposito
 ./gradlew -Pversion=0.0.0 publishToMavenLocal
 ```
 
+## Callback semantics
+
+`VcmpSession.send(...)` returns a `VcmpCallback` that is completed by the peer's ACK or NAK. It is
+additionally failed with a NAK when the message can never be acknowledged:
+
+| Condition | Status | Title |
+|-----------|--------|-------|
+| The peer's listener failed | the peer's own status | the peer's own title |
+| Sending on an already closed session | `503` | `Session closed` |
+| The session closed while the ACK was still outstanding | `503` | `Session closed` |
+
+Both `503` cases mirror what the JavaScript implementation reports for the same conditions
+(variocube/vcmp-js#32), so a `503` can be treated uniformly as a retryable transport condition.
+Note that a `503` does not imply the peer never processed the message — an ACK lost to a connection
+drop still means the listener ran. Retry only what is idempotent.
+
+**VCMP does not impose a timeout on acknowledgement.** As long as the session stays open, a
+callback waits for a peer that is slow — a listener may legitimately take minutes. Bounding that
+wait is the caller's decision: use `VcmpCallback.await()` (20 s default), `awaitSeconds(int)`, or
+`await(long, TimeUnit)`. A connection that has actually died is detected by the heartbeat and
+closed, which fails the callback via the `Session closed` path above.
+
 ## Threading
 
 VCMP schedules its work on a shared pool of **daemon** threads (`VCMP-Worker-*`, `VCMP-Scheduler-*`).
