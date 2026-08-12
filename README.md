@@ -37,7 +37,11 @@ drop still means the listener ran. Retry only what is idempotent.
 callback waits for a peer that is slow — a listener may legitimately take minutes. Bounding that
 wait is the caller's decision: use `VcmpCallback.await()` (20 s default), `awaitSeconds(int)`, or
 `await(long, TimeUnit)`. A connection that has actually died is detected by the heartbeat and
-closed, which fails the callback via the `Session closed` path above.
+closed, which fails the callback via the `Session closed` path above — **provided a heartbeat is
+running**: the library does not start one by itself. One side must call
+`VcmpSession.initiateHeartbeat(...)` (typically in the `@VcmpSessionConnected` handler, as all
+Variocube backends do); both sides then watch it. Without an initiated heartbeat, a half-open
+connection goes undetected and pending callbacks are not settled.
 
 ## Threading
 

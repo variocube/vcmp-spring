@@ -286,6 +286,16 @@ public class VcmpCallback<T> {
 
     public static <T> VcmpCallback<T> any(Collection<VcmpCallback<T>> callbacks) {
         val combined = new VcmpCallback<T>();
+        // With no callbacks, no ack or nak can ever arrive — fail immediately instead of
+        // remaining PENDING forever (e.g. VcmpSessionPool.send() to a recipient without a
+        // connected session).
+        if (callbacks.isEmpty()) {
+            val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                    "There is no session to send to.");
+            problemDetail.setTitle("Not connected");
+            combined.notifyNak(problemDetail);
+            return combined;
+        }
         val errors = new AtomicInteger();
         for (val callback : callbacks) {
             callback.onAck(combined::notifyAck);

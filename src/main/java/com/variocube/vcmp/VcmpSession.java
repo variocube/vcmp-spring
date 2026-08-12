@@ -75,11 +75,23 @@ public class VcmpSession {
         }
         catch (SessionClosedException e) {
             callbacks.remove(vcmpFrame.getId());
-            return VcmpCallback.failed(sessionClosedProblemDetail(
-                    "Cannot send message: the session is already closed."));
+            return VcmpCallback.failed(sessionClosedProblemDetail(e.getMessage()));
         }
         catch (IOException e) {
             callbacks.remove(vcmpFrame.getId());
+            return VcmpCallback.failed(createProblemDetail(e));
+        }
+        catch (RuntimeException e) {
+            // e.g. an IllegalStateException from the container when the peer disconnects
+            // between the isOpen() check and reading the session's message size limit.
+            // Without this catch, the callbacks entry would be stranded forever and the
+            // exception would unwind a caller iterating over sessions (broadcast).
+            callbacks.remove(vcmpFrame.getId());
+            log.warn("Unexpected error while sending frame", e);
+            if (!isOpen()) {
+                return VcmpCallback.failed(sessionClosedProblemDetail(
+                        "The session was closed while sending the message."));
+            }
             return VcmpCallback.failed(createProblemDetail(e));
         }
         return callback;
@@ -94,12 +106,29 @@ public class VcmpSession {
      * ACK/NAK frame: VCMP itself does not bound how long a peer may take to acknowledge.
      * Callers that need such a bound impose it themselves, e.g. via
      * {@link VcmpCallback#awaitSeconds(int)}.
+     * <p>
+     * Runs on the VCMP executor, after the container's close handling — the synchronous
+     * {@code @VcmpSessionDisconnected} dispatch may already have run, so client-side state
+     * (e.g. {@code BasicVcmpClient}'s session reference) may already be cleared when a NAK
+     * handler fires; a handler that reacts by re-sending fails fast instead of blocking.
+     * NAK handlers are delivered serially here, so under a large fan-out a later callback
+     * may observe its NAK only after the earlier handlers (including chained NAK frames on
+     * other sessions) have completed.
      */
     void failPendingCallbacks() {
-        val problemDetail = sessionClosedProblemDetail(
-                "The session was closed before the message was acknowledged.");
         for (val id : callbacks.keySet()) {
-            notifyNak(id, problemDetail);
+            // One ProblemDetail per callback: it is mutable, and a NAK handler that annotates
+            // it must not leak those changes into the NAKs delivered to other callbacks.
+            val problemDetail = sessionClosedProblemDetail(
+                    "The session was closed before the message was acknowledged.");
+            try {
+                notifyNak(id, problemDetail);
+            }
+            catch (Exception e) {
+                // A throwing NAK handler (consumer code) must not abort the drain — the
+                // remaining callbacks would silently stay pending forever otherwise.
+                log.error("Error failing pending callback {}", id, e);
+            }
         }
     }
 
@@ -214,7 +243,9 @@ public class VcmpSession {
             catch (Exception e) {
                 log.warn("Error while sending web socket message", e);
                 this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
-                throw new IOException("Error while sending web socket message", e);
+                // The session is gone as a result of this failure — report it like any other
+                // send on a closed session (503), not as a peer-side error (500).
+                throw new SessionClosedException("The session was closed due to an error while sending the message.", e);
             }
             finally {
                 // Make sure to release lock in any case
@@ -234,7 +265,11 @@ public class VcmpSession {
      */
     static class SessionClosedException extends IOException {
         SessionClosedException() {
-            super("Session already closed.");
+            super("Cannot send message: the session is already closed.");
+        }
+
+        SessionClosedException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

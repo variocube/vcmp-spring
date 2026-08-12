@@ -84,6 +84,10 @@ class PendingAckTest extends VcmpTestBase {
         try (val connection = new VcmpConnectionManager(client, URL)) {
             connection.start();
             await().until(client::isConnected);
+            // The server adds the session from an async dispatch, and a session from a
+            // previous test may still be draining out of the pool — wait until exactly
+            // this client's session is there.
+            await().until(() -> endpoint.getSessionPool().getOpenSessions().size() == 1);
             serverSession = endpoint.getSessionPool().getOpenSessions().get(0);
         }
         await().until(() -> !serverSession.isOpen());
@@ -93,6 +97,34 @@ class PendingAckTest extends VcmpTestBase {
 
         assertThat(nak.get()).isNotNull();
         assertSessionClosed(nak.get());
+    }
+
+    @Test
+    void drainSurvivesThrowingNakHandlers() throws IOException {
+        val client = new PendingAckClient();
+        try (val connection = new VcmpConnectionManager(client, URL)) {
+            connection.start();
+            await().until(client::isConnected);
+
+            // Two pending callbacks whose NAK handlers both throw after recording: no matter
+            // which one the drain reaches first, the other must still be settled.
+            val nak1 = new AtomicReference<ProblemDetail>();
+            val nak2 = new AtomicReference<ProblemDetail>();
+            client.send(new PendingAckMessage()).peekNak(problemDetail -> {
+                nak1.set(problemDetail);
+                throw new RuntimeException("NAK handler failure 1");
+            });
+            client.send(new PendingAckMessage()).peekNak(problemDetail -> {
+                nak2.set(problemDetail);
+                throw new RuntimeException("NAK handler failure 2");
+            });
+
+            client.closeSession();
+
+            await().until(() -> nak1.get() != null && nak2.get() != null);
+            assertSessionClosed(nak1.get());
+            assertSessionClosed(nak2.get());
+        }
     }
 
     private static void assertSessionClosed(ProblemDetail problemDetail) {
