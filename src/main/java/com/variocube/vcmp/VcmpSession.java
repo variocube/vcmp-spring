@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -59,16 +60,94 @@ public class VcmpSession {
     }
 
     public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) {
+        VcmpFrame vcmpFrame;
         try {
-            VcmpFrame vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
-            VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
-            callbacks.put(vcmpFrame.getId(), callback);
-            sendFrame(vcmpFrame);
-            return callback;
+            vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
         }
         catch (IOException e) {
             return VcmpCallback.failed(createProblemDetail(e));
         }
+
+        VcmpCallback<T> callback = new VcmpCallback<>(resultClass);
+        callbacks.put(vcmpFrame.getId(), callback);
+        try {
+            sendFrame(vcmpFrame);
+        }
+        catch (SessionClosedException e) {
+            callbacks.remove(vcmpFrame.getId());
+            return VcmpCallback.failed(sessionClosedProblemDetail(e.getMessage()));
+        }
+        catch (IOException e) {
+            callbacks.remove(vcmpFrame.getId());
+            return VcmpCallback.failed(createProblemDetail(e));
+        }
+        catch (RuntimeException e) {
+            // e.g. an IllegalStateException from the container when the peer disconnects
+            // between the isOpen() check and reading the session's message size limit.
+            // Without this catch, the callbacks entry would be stranded forever and the
+            // exception would unwind a caller iterating over sessions (broadcast).
+            callbacks.remove(vcmpFrame.getId());
+            log.warn("Unexpected error while sending frame", e);
+            if (!isOpen()) {
+                return VcmpCallback.failed(sessionClosedProblemDetail(
+                        "The session was closed while sending the message."));
+            }
+            return VcmpCallback.failed(createProblemDetail(e));
+        }
+        return callback;
+    }
+
+    /**
+     * Fails all pending callbacks of this session with a NAK.
+     * Called when the underlying connection closes, so that senders and chained
+     * ACKs are notified instead of pending forever.
+     * <p>
+     * Note that this is the only mechanism that settles a pending callback without an
+     * ACK/NAK frame: VCMP itself does not bound how long a peer may take to acknowledge.
+     * Callers that need such a bound impose it themselves, e.g. via
+     * {@link VcmpCallback#awaitSeconds(int)}.
+     * <p>
+     * Runs on the VCMP executor, concurrently with the container's disconnect handling —
+     * a NAK handler must not assume the disconnect is already reflected in client- or
+     * pool-side state (it may still observe {@code BasicVcmpClient.isConnected() == true}
+     * or the dead session in {@code VcmpSessionPool} counts), nor that it still is (the
+     * {@code @VcmpSessionDisconnected} dispatch may already have cleared it; a handler
+     * that reacts by re-sending then fails fast instead of blocking).
+     * <p>
+     * Each callback is failed as its own executor task, so one slow or blocking NAK
+     * handler (e.g. a chained NAK performing socket I/O on another session) does not
+     * delay the NAKs of the other callbacks beyond their callers' own await timeouts.
+     */
+    void failPendingCallbacks() {
+        for (val id : callbacks.keySet()) {
+            // One ProblemDetail per callback: it is mutable, and a NAK handler that annotates
+            // it must not leak those changes into the NAKs delivered to other callbacks.
+            val problemDetail = sessionClosedProblemDetail(
+                    "The session was closed before the message was acknowledged.");
+            Executor.getExecutor().submit(() -> {
+                try {
+                    notifyNak(id, problemDetail);
+                }
+                catch (Throwable t) {
+                    // A throwing NAK handler (consumer code, including Errors such as an
+                    // AssertionError) must not abort the drain — the remaining callbacks
+                    // would silently stay pending forever otherwise.
+                    log.error("Error failing pending callback {}", id, t);
+                }
+            });
+        }
+    }
+
+    /**
+     * Creates the {@code 503 Session closed} problem detail used for every callback that fails
+     * because this session is gone. Matches the status the JS implementation reports for the same
+     * conditions (variocube/vcmp-js#32), so consumers can treat 503 uniformly as a retryable
+     * transport condition.
+     */
+    private static ProblemDetail sessionClosedProblemDetail(String detail) {
+        val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
+        problemDetail.setTitle("Session closed");
+        return problemDetail;
     }
 
     public void initiateHeartbeat(int intervalMillis) {
@@ -169,8 +248,17 @@ public class VcmpSession {
             }
             catch (Exception e) {
                 log.warn("Error while sending web socket message", e);
-                this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
-                throw new IOException("Error while sending web socket message", e);
+                try {
+                    this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
+                }
+                catch (Exception closeError) {
+                    // The close must not mask the SessionClosedException below — send() maps
+                    // that to 503, while a plain IOException would surface as a 500.
+                    log.warn("Error closing session after send failure", closeError);
+                }
+                // The session is gone as a result of this failure — report it like any other
+                // send on a closed session (503), not as a peer-side error (500).
+                throw new SessionClosedException("The session was closed due to an error while sending the message.", e);
             }
             finally {
                 // Make sure to release lock in any case
@@ -180,7 +268,21 @@ public class VcmpSession {
             log.trace("Finished sending frame {}", frame);
         }
         else {
-            throw new IOException("Session already closed.");
+            throw new SessionClosedException();
+        }
+    }
+
+    /**
+     * Signals that a frame could not be sent because the underlying session is already closed —
+     * as opposed to an error while sending on an open session.
+     */
+    static class SessionClosedException extends IOException {
+        SessionClosedException() {
+            super("Cannot send message: the session is already closed.");
+        }
+
+        SessionClosedException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 
