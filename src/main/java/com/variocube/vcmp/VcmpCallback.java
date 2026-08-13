@@ -91,8 +91,17 @@ public class VcmpCallback<T> {
     }
 
     void notifyAck(T result) {
-        this.result = result;
-        this.state = State.COMPLETED;
+        // Settle at most once: e.g. a combined callback from all()/any() receives one NAK
+        // per closing session, but must fire its handlers (and any chained NAK frame) for
+        // the first settlement only.
+        synchronized (this) {
+            if (this.state != State.PENDING) {
+                log.debug("Ignoring ACK: callback is already settled.");
+                return;
+            }
+            this.result = result;
+            this.state = State.COMPLETED;
+        }
         if (this.ack != null) {
             log.debug("Invoking ACK handler.");
             this.ack.accept(result);
@@ -104,8 +113,14 @@ public class VcmpCallback<T> {
     }
 
     void notifyNak(ProblemDetail problemDetail) {
-        this.problemDetail = problemDetail;
-        this.state = State.FAILED;
+        synchronized (this) {
+            if (this.state != State.PENDING) {
+                log.debug("Ignoring NAK: callback is already settled.");
+                return;
+            }
+            this.problemDetail = problemDetail;
+            this.state = State.FAILED;
+        }
         if (this.nak != null) {
             log.debug("Invoking NAK handler.");
             this.nak.accept(problemDetail);

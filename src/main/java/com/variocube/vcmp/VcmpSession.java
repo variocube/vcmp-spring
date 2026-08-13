@@ -107,13 +107,16 @@ public class VcmpSession {
      * Callers that need such a bound impose it themselves, e.g. via
      * {@link VcmpCallback#awaitSeconds(int)}.
      * <p>
-     * Runs on the VCMP executor, after the container's close handling — the synchronous
-     * {@code @VcmpSessionDisconnected} dispatch may already have run, so client-side state
-     * (e.g. {@code BasicVcmpClient}'s session reference) may already be cleared when a NAK
-     * handler fires; a handler that reacts by re-sending fails fast instead of blocking.
-     * NAK handlers are delivered serially here, so under a large fan-out a later callback
-     * may observe its NAK only after the earlier handlers (including chained NAK frames on
-     * other sessions) have completed.
+     * Runs on the VCMP executor, concurrently with the container's disconnect handling —
+     * a NAK handler must not assume the disconnect is already reflected in client- or
+     * pool-side state (it may still observe {@code BasicVcmpClient.isConnected() == true}
+     * or the dead session in {@code VcmpSessionPool} counts), nor that it still is (the
+     * {@code @VcmpSessionDisconnected} dispatch may already have cleared it; a handler
+     * that reacts by re-sending then fails fast instead of blocking).
+     * <p>
+     * Each callback is failed as its own executor task, so one slow or blocking NAK
+     * handler (e.g. a chained NAK performing socket I/O on another session) does not
+     * delay the NAKs of the other callbacks beyond their callers' own await timeouts.
      */
     void failPendingCallbacks() {
         for (val id : callbacks.keySet()) {
@@ -121,14 +124,17 @@ public class VcmpSession {
             // it must not leak those changes into the NAKs delivered to other callbacks.
             val problemDetail = sessionClosedProblemDetail(
                     "The session was closed before the message was acknowledged.");
-            try {
-                notifyNak(id, problemDetail);
-            }
-            catch (Exception e) {
-                // A throwing NAK handler (consumer code) must not abort the drain — the
-                // remaining callbacks would silently stay pending forever otherwise.
-                log.error("Error failing pending callback {}", id, e);
-            }
+            Executor.getExecutor().submit(() -> {
+                try {
+                    notifyNak(id, problemDetail);
+                }
+                catch (Throwable t) {
+                    // A throwing NAK handler (consumer code, including Errors such as an
+                    // AssertionError) must not abort the drain — the remaining callbacks
+                    // would silently stay pending forever otherwise.
+                    log.error("Error failing pending callback {}", id, t);
+                }
+            });
         }
     }
 
@@ -242,7 +248,14 @@ public class VcmpSession {
             }
             catch (Exception e) {
                 log.warn("Error while sending web socket message", e);
-                this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
+                try {
+                    this.webSocketSession.close(new CloseStatus(CloseReason.CloseCodes.CLOSED_ABNORMALLY.getCode(), "Error while sending message"));
+                }
+                catch (Exception closeError) {
+                    // The close must not mask the SessionClosedException below — send() maps
+                    // that to 503, while a plain IOException would surface as a 500.
+                    log.warn("Error closing session after send failure", closeError);
+                }
                 // The session is gone as a result of this failure — report it like any other
                 // send on a closed session (503), not as a peer-side error (500).
                 throw new SessionClosedException("The session was closed due to an error while sending the message.", e);

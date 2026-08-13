@@ -27,8 +27,13 @@ additionally failed with a NAK when the message can never be acknowledged:
 | The peer's listener failed | the peer's own status | the peer's own title |
 | Sending on an already closed session | `503` | `Session closed` |
 | The session closed while the ACK was still outstanding | `503` | `Session closed` |
+| Sending without a session (`BasicVcmpClient.send` while disconnected, `VcmpSessionPool.send` to a recipient with no connected session) | `503` | `Not connected` |
 
-Both `503` cases mirror what the JavaScript implementation reports for the same conditions
+A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
+fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
+settlement to its handlers.
+
+All `503` cases mirror what the JavaScript implementation reports for the same conditions
 (variocube/vcmp-js#32), so a `503` can be treated uniformly as a retryable transport condition.
 Note that a `503` does not imply the peer never processed the message — an ACK lost to a connection
 drop still means the listener ran. Retry only what is idempotent.

@@ -11,6 +11,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.util.Collections.emptyList;
@@ -99,6 +100,48 @@ class VcmpCallbackTest {
     void canAllEmptyAcksImmediately() {
         val results = VcmpCallback.<Void>all(emptyList()).await();
         assertThat(results).isEmpty();
+    }
+
+    @Test
+    void canAnyEmptyNaksImmediately() {
+        val nak = new AtomicReference<ProblemDetail>();
+        VcmpCallback.<Void>any(emptyList()).peekNak(nak::set);
+        assertThat(nak.get()).isNotNull();
+        assertThat(nak.get().getStatus()).isEqualTo(503);
+        assertThat(nak.get().getTitle()).isEqualTo("Not connected");
+    }
+
+    @Test
+    void settlesAtMostOnce() {
+        val callback = new VcmpCallback<Void>();
+        val nakCount = new AtomicInteger();
+        callback.peekNak(nakCount::incrementAndGet);
+        callback.notifyNak(ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        callback.notifyNak(ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(nakCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void ignoresNakAfterAck() {
+        val callback = new VcmpCallback<Integer>();
+        val nakCount = new AtomicInteger();
+        callback.peekNak(nakCount::incrementAndGet);
+        callback.notifyAck(5);
+        callback.notifyNak(ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(nakCount.get()).isEqualTo(0);
+        assertThat(callback.await()).isEqualTo(5);
+    }
+
+    @Test
+    void combinedAllNaksOnlyOnceWhenMultipleMembersFail() {
+        val member1 = new VcmpCallback<Void>();
+        val member2 = new VcmpCallback<Void>();
+        val nakCount = new AtomicInteger();
+        VcmpCallback.all(member1, member2).peekNak(nakCount::incrementAndGet);
+        // e.g. two sessions of a broadcast closing one after another
+        member1.notifyNak(ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        member2.notifyNak(ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(nakCount.get()).isEqualTo(1);
     }
 
     @Test
