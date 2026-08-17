@@ -17,6 +17,11 @@ In order to test locally, you can publish a version to your local maven reposito
 ./gradlew -Pversion=0.0.0 publishToMavenLocal
 ```
 
+Note: in consumers that also pull `vcmp` transitively (e.g. center via `app-common`), Gradle's
+conflict resolution picks the *highest* version, so `0.0.0` silently loses to the transitive one.
+Publish as `<next-version>-SNAPSHOT` instead (e.g. `-Pversion=6.1.0-SNAPSHOT`) — it outranks all
+released versions below it but not the eventual release itself.
+
 ## Callback semantics
 
 `VcmpSession.send(...)` returns a `VcmpCallback` that is completed by the peer's ACK or NAK. It is
