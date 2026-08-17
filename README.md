@@ -2,7 +2,7 @@
 
 Implementation of the Variocube Messaging Protocol (VCMP) in Java for the Spring framework.
 Both client and server are available in this library.
- 
+
 ## Versions
 
 - The `3.x` versions target Spring Boot 3 and are in the `master` branch.
@@ -22,12 +22,12 @@ In order to test locally, you can publish a version to your local maven reposito
 `VcmpSession.send(...)` returns a `VcmpCallback` that is completed by the peer's ACK or NAK. It is
 additionally failed with a NAK when the message can never be acknowledged:
 
-| Condition | Status | Title |
-|-----------|--------|-------|
-| The peer's listener failed | the peer's own status | the peer's own title |
-| Sending on an already closed session | `503` | `Session closed` |
-| The session closed while the ACK was still outstanding | `503` | `Session closed` |
-| Sending without a session (`BasicVcmpClient.send` while disconnected, `VcmpSessionPool.send` to a recipient with no connected session) | `503` | `Not connected` |
+| Condition                                                                                                                              | Status                | Title                |
+| -------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | -------------------- |
+| The peer's listener failed                                                                                                             | the peer's own status | the peer's own title |
+| Sending on an already closed session                                                                                                   | `503`                 | `Session closed`     |
+| The session closed while the ACK was still outstanding                                                                                 | `503`                 | `Session closed`     |
+| Sending without a session (`BasicVcmpClient.send` while disconnected, `VcmpSessionPool.send` to a recipient with no connected session) | `503`                 | `Not connected`      |
 
 A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
@@ -48,6 +48,38 @@ running**: the library does not start one by itself. One side must call
 Variocube backends do); both sides then watch it. Without an initiated heartbeat, a half-open
 connection goes undetected and pending callbacks are not settled.
 
+## Listener retry
+
+A `@VcmpListener(retry = true)` listener that fails is retried with exponential backoff before the
+message is NAKed (variocube/center#450). This absorbs transient failures — the motivating case is a
+database lock conflict rolling back the listener's transaction at commit — which would otherwise
+drop the message permanently: a NAKed message is not queued for redelivery, and senders like the
+controller only replay their durable queue on the next session connect.
+
+Retry is **opt-in per listener** because it makes delivery _at-least-once_: the listener may run
+more than once for the same message. Only opt in listeners that are idempotent — typically those
+whose entire work happens in one transaction that leaves no partial effects on rollback. In
+particular, a listener that fires hardware, sends notifications, or mutates in-memory state before
+a point where it can fail must **not** opt in.
+
+Never retried, regardless of opt-in:
+
+- `ErrorResponseException` (including `ResponseStatusException`) and exceptions annotated with
+  `@ResponseStatus` — the listener deliberately chose an error status; its NAK stays immediate.
+- Failures before the listener runs: message deserialization errors and unknown message types.
+- Listeners returning a `VcmpCallback` — the listener owns the outcome via its callback.
+
+A `CompletableFuture`-returning listener is retried when its future completes exceptionally. The
+final NAK carries the last attempt's error. Retries stop when the session closes. Each retried
+attempt logs a WARN with the failure; the final NAK logs an ERROR.
+
+| Property                                      | Default | Meaning                                                                                        |
+| --------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `vcmp.server.listener-retry.attempts`         | `5`     | Total attempts including the first, for listeners with `retry = true`. `<= 1` disables retry.  |
+| `vcmp.server.listener-retry.initial-delay-ms` | `100`   | Delay before the first retry; doubles per retry (100, 200, 400, 800 ms → ~1.5 s total budget). |
+
+Clients get the same defaults; they are tunable programmatically via the `VcmpHandler` setters.
+
 ## Threading
 
 VCMP schedules its work on a shared pool of **daemon** threads (`VCMP-Worker-*`, `VCMP-Scheduler-*`).
@@ -59,7 +91,7 @@ restart policy can recover (see variocube/center#427).
 Servers embedding VCMP endpoints get two protections against fleet-wide reconnect storms racing
 application startup (the web server port opens before startup has finished):
 
-| Property | Default | Meaning |
-|----------|---------|---------|
-| `vcmp.server.ready-gate.enabled` | `true` | Reject websocket handshakes with `503` + `Retry-After` until `ApplicationReadyEvent`. The filter runs at highest precedence, before Spring Security. Clients reconnect with retry. |
-| `vcmp.server.connect-concurrency` | `8` | Bound on concurrently running `@VcmpSessionConnected` handlers, shared across all endpoints of the application. Queues connect storms instead of exhausting resources (e.g. the DB pool). `<= 0` disables throttling. |
+| Property                          | Default | Meaning                                                                                                                                                                                                               |
+| --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vcmp.server.ready-gate.enabled`  | `true`  | Reject websocket handshakes with `503` + `Retry-After` until `ApplicationReadyEvent`. The filter runs at highest precedence, before Spring Security. Clients reconnect with retry.                                    |
+| `vcmp.server.connect-concurrency` | `8`     | Bound on concurrently running `@VcmpSessionConnected` handlers, shared across all endpoints of the application. Queues connect storms instead of exhausting resources (e.g. the DB pool). `<= 0` disables throttling. |
