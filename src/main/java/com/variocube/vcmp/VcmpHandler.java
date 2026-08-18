@@ -231,7 +231,10 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending NAK for message {} with error {}", messageId, problemDetail);
             }
             try {
-                val payload = problemDetail != null ? objectMapper.writeValueAsString(problemDetail) : null;
+                // Never leak the local marker over the wire: a chained NAK may carry a ProblemDetail
+                // that failed locally on this side (e.g. a relay forwarding while disconnected).
+                val wireProblemDetail = LocalProblem.stripForWire(problemDetail);
+                val payload = wireProblemDetail != null ? objectMapper.writeValueAsString(wireProblemDetail) : null;
                 session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
             catch (IOException e) {
@@ -316,11 +319,15 @@ public final class VcmpHandler implements WebSocketHandler {
 
     static ProblemDetail createProblemDetail(Throwable throwable) {
         if (throwable instanceof ErrorResponseException errorResponseException) {
+            // Deliberate listener status (or an already-classified body) — pass through unchanged.
             return errorResponseException.getBody();
         }
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
-        return problemDetail;
+        // Marked local: when this ProblemDetail is delivered to a local callback (e.g. a send failure
+        // in VcmpSession.send), it is a transport-level condition the peer never saw. When it is built
+        // for an outbound NAK instead, the marker is stripped at the wire boundary in nak().
+        return LocalProblem.mark(problemDetail);
     }
 
     ProblemDetail parseProblemDetail(String payload) {
@@ -328,7 +335,11 @@ public final class VcmpHandler implements WebSocketHandler {
             return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Message handling failed.");
         }
         try {
-            return objectMapper.readValue(payload, ProblemDetail.class);
+            val problemDetail = objectMapper.readValue(payload, ProblemDetail.class);
+            // Never trust a peer-sent marker: a ProblemDetail that crossed the wire is by definition
+            // not local, and an older or misbehaving peer must not be able to forge it.
+            LocalProblem.unmark(problemDetail);
+            return problemDetail;
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse ProblemDetail from payload: {}", payload, e);
             return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to parse ProblemDetail");

@@ -85,6 +85,20 @@ class VcmpCallbackTest {
     }
 
     @Test
+    void failedWithoutProblemDetailIsLocal() {
+        val nak = new AtomicReference<ProblemDetail>();
+        VcmpCallback.failed().peekNak(nak::set);
+        assertThat(LocalProblem.isLocal(nak.get())).isTrue();
+    }
+
+    @Test
+    void failedWithCallerSuppliedProblemDetailStaysNonLocal() {
+        val nak = new AtomicReference<ProblemDetail>();
+        VcmpCallback.failed(ProblemDetail.forStatus(HttpStatus.CONFLICT)).peekNak(nak::set);
+        assertThat(LocalProblem.isLocal(nak.get())).isFalse();
+    }
+
+    @Test
     void canAwaitFailedProblemDetail() {
         val exception = catchThrowableOfType(() -> VcmpCallback.failed(ProblemDetail.forStatus(HttpStatus.CONFLICT)).await(), ErrorResponseException.class);
         assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -109,6 +123,7 @@ class VcmpCallbackTest {
         assertThat(nak.get()).isNotNull();
         assertThat(nak.get().getStatus()).isEqualTo(503);
         assertThat(nak.get().getTitle()).isEqualTo("Not connected");
+        assertThat(LocalProblem.isLocal(nak.get())).isTrue();
     }
 
     @Test

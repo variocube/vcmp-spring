@@ -38,7 +38,7 @@ public class BasicVcmpClient {
             val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
                     "Cannot send message: the client has no session.");
             problemDetail.setTitle("Not connected");
-            return VcmpCallback.failed(problemDetail);
+            return VcmpCallback.failed(LocalProblem.mark(problemDetail));
         }
         return session.send(message, resultClass);
     }

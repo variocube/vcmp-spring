@@ -1,5 +1,6 @@
 package com.variocube.vcmp.pendingack;
 
+import com.variocube.vcmp.LocalProblem;
 import com.variocube.vcmp.VcmpSession;
 import com.variocube.vcmp.VcmpTestBase;
 import com.variocube.vcmp.client.VcmpConnectionManager;
@@ -43,6 +44,8 @@ class PendingAckTest extends VcmpTestBase {
 
             await().until(() -> nak.get() != null);
             assertSessionClosed(nak.get());
+            // delivered locally, without a NAK frame from the peer
+            assertThat(LocalProblem.isLocal(nak.get())).isTrue();
         }
     }
 
@@ -74,6 +77,9 @@ class PendingAckTest extends VcmpTestBase {
 
             await().until(() -> nak.get() != null);
             assertSessionClosed(nak.get());
+            // The endpoint's chained callback failed locally on the server, but this NAK crossed
+            // the wire to the upstream sender — the local marker must have been stripped.
+            assertThat(LocalProblem.isLocal(nak.get())).isFalse();
         }
     }
 
@@ -97,6 +103,7 @@ class PendingAckTest extends VcmpTestBase {
 
         assertThat(nak.get()).isNotNull();
         assertSessionClosed(nak.get());
+        assertThat(LocalProblem.isLocal(nak.get())).isTrue();
     }
 
     @Test
