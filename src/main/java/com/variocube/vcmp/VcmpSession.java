@@ -147,7 +147,7 @@ public class VcmpSession {
     private static ProblemDetail sessionClosedProblemDetail(String detail) {
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
         problemDetail.setTitle("Session closed");
-        return problemDetail;
+        return LocalProblem.mark(problemDetail);
     }
 
     public void initiateHeartbeat(int intervalMillis) {

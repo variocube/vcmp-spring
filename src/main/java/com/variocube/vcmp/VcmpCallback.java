@@ -263,7 +263,7 @@ public class VcmpCallback<T> {
 
     public static <T> VcmpCallback<T> failed() {
         val callback = new VcmpCallback<T>();
-        callback.notifyNak(ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+        callback.notifyNak(LocalProblem.mark(ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR)));
         return callback;
     }
 
@@ -308,7 +308,7 @@ public class VcmpCallback<T> {
             val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
                     "There is no session to send to.");
             problemDetail.setTitle("Not connected");
-            combined.notifyNak(problemDetail);
+            combined.notifyNak(LocalProblem.mark(problemDetail));
             return combined;
         }
         val errors = new AtomicInteger();

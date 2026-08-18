@@ -38,6 +38,18 @@ All `503` cases mirror what the JavaScript implementation reports for the same c
 Note that a `503` does not imply the peer never processed the message — an ACK lost to a connection
 drop still means the listener ran. Retry only what is idempotent.
 
+### Local vs peer ProblemDetails
+
+Every ProblemDetail created locally by this VCMP instance — the `503` rows above, plus the `500`
+fallbacks for local send failures — carries the property `LocalProblem.PROPERTY` (`"vcmp-local"`).
+ProblemDetails from a peer's NAK never do: the marker is stripped when a NAK frame is serialized and
+removed from parsed NAK payloads, so a peer can neither observe nor forge it. Consumers that need to
+distinguish "the peer never saw this message, retry later" from "the peer rejected this message"
+should use `LocalProblem.isLocal(problemDetail)` instead of matching on status codes — a peer's NAK
+may carry a `503` or `408` of its own. A timeout or interrupt while awaiting a reply surfaces as a
+locally thrown `ResponseStatusException` from `VcmpCallback.await(...)`, not as a marked
+ProblemDetail — treat both as transport-level.
+
 **VCMP does not impose a timeout on acknowledgement.** As long as the session stays open, a
 callback waits for a peer that is slow — a listener may legitimately take minutes. Bounding that
 wait is the caller's decision: use `VcmpCallback.await()` (20 s default), `awaitSeconds(int)`, or
