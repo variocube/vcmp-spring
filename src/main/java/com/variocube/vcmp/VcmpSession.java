@@ -65,6 +65,9 @@ public class VcmpSession {
             vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
         }
         catch (IOException e) {
+            // Deliberately NOT marked as a local connection problem: a serialization failure is
+            // deterministic — retrying the same message cannot succeed, so consumers must treat it
+            // like a rejection (with whatever give-up path they have), not as "retry later".
             return VcmpCallback.failed(createProblemDetail(e));
         }
 
@@ -78,8 +81,10 @@ public class VcmpSession {
             return VcmpCallback.failed(sessionClosedProblemDetail(e.getMessage()));
         }
         catch (IOException e) {
+            // Transient send failure on an open session (e.g. the send-lock timeout under
+            // contention): the peer never saw the message and retrying later may succeed.
             callbacks.remove(vcmpFrame.getId());
-            return VcmpCallback.failed(createProblemDetail(e));
+            return VcmpCallback.failed(LocalConnectionProblem.mark(createProblemDetail(e)));
         }
         catch (RuntimeException e) {
             // e.g. an IllegalStateException from the container when the peer disconnects
@@ -92,7 +97,7 @@ public class VcmpSession {
                 return VcmpCallback.failed(sessionClosedProblemDetail(
                         "The session was closed while sending the message."));
             }
-            return VcmpCallback.failed(createProblemDetail(e));
+            return VcmpCallback.failed(LocalConnectionProblem.mark(createProblemDetail(e)));
         }
         return callback;
     }
@@ -147,7 +152,7 @@ public class VcmpSession {
     private static ProblemDetail sessionClosedProblemDetail(String detail) {
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
         problemDetail.setTitle("Session closed");
-        return LocalProblem.mark(problemDetail);
+        return LocalConnectionProblem.mark(problemDetail);
     }
 
     public void initiateHeartbeat(int intervalMillis) {

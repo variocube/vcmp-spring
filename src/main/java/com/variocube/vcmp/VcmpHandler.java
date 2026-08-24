@@ -233,7 +233,7 @@ public final class VcmpHandler implements WebSocketHandler {
             try {
                 // Never leak the local marker over the wire: a chained NAK may carry a ProblemDetail
                 // that failed locally on this side (e.g. a relay forwarding while disconnected).
-                val wireProblemDetail = LocalProblem.stripForWire(problemDetail);
+                val wireProblemDetail = LocalConnectionProblem.stripForWire(problemDetail);
                 val payload = wireProblemDetail != null ? objectMapper.writeValueAsString(wireProblemDetail) : null;
                 session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
@@ -324,10 +324,11 @@ public final class VcmpHandler implements WebSocketHandler {
         }
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
-        // Marked local: when this ProblemDetail is delivered to a local callback (e.g. a send failure
-        // in VcmpSession.send), it is a transport-level condition the peer never saw. When it is built
-        // for an outbound NAK instead, the marker is stripped at the wire boundary in nak().
-        return LocalProblem.mark(problemDetail);
+        // Deliberately NOT marked as a local connection problem: this fallback also covers
+        // deterministic local failures (e.g. a message that cannot be serialized) and outbound
+        // listener-failure NAKs — neither is a retryable transport condition. Call sites that
+        // represent transient connection-level failures mark the result themselves.
+        return problemDetail;
     }
 
     ProblemDetail parseProblemDetail(String payload) {
@@ -338,7 +339,7 @@ public final class VcmpHandler implements WebSocketHandler {
             val problemDetail = objectMapper.readValue(payload, ProblemDetail.class);
             // Never trust a peer-sent marker: a ProblemDetail that crossed the wire is by definition
             // not local, and an older or misbehaving peer must not be able to forge it.
-            LocalProblem.unmark(problemDetail);
+            LocalConnectionProblem.unmark(problemDetail);
             return problemDetail;
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse ProblemDetail from payload: {}", payload, e);

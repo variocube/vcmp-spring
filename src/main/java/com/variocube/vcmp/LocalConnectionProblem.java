@@ -1,33 +1,36 @@
 package com.variocube.vcmp;
 
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.ErrorResponseException;
+import org.springframework.web.server.ResponseStatusException;
 
 import lombok.val;
 
 /**
- * Marks a {@link ProblemDetail} as created locally by this VCMP instance — a transport-level failure
- * (no session, session closed, send failure) — as opposed to a NAK received from the peer.
+ * Marks a {@link ProblemDetail} as a connection-level problem detected locally by this VCMP instance —
+ * no session, session closed, or a transient failure while sending on an open session — as opposed to
+ * a NAK received from the peer, or a deterministic local failure (e.g. a message that cannot be
+ * serialized) that retrying cannot fix.
  * <p>
  * The marker is a ProblemDetail property that never crosses the wire: it is stripped when a NAK frame
  * is serialized ({@code VcmpHandler#nak}) and removed from freshly parsed NAK payloads
- * ({@code VcmpHandler#parseProblemDetail}), so a peer can neither observe nor forge it.
+ * ({@code VcmpHandler#parseProblemDetail}) as well as top-level ProblemDetail ACK results, so a peer
+ * can neither observe nor forge it on those channels.
  * <p>
- * Consumers use {@link #isLocal(ProblemDetail)} to distinguish "the peer never saw this message, retry
- * later" from "the peer rejected this message" — instead of matching on status codes, which a peer's
- * NAK may carry for its own reasons. Note that a timeout or interrupt while awaiting a reply surfaces
- * as a locally thrown {@link org.springframework.web.server.ResponseStatusException} from
- * {@link VcmpCallback#await}, not as a marked ProblemDetail.
+ * Consumers use {@link #isTransportFailure(ErrorResponseException)} to distinguish "the peer never saw
+ * this message and retrying later may succeed" from "this message failed for good" — instead of
+ * matching on status codes, which a peer's NAK may carry for its own reasons.
  */
-public final class LocalProblem {
+public final class LocalConnectionProblem {
 
-    /** Property key on {@link ProblemDetail#getProperties()} marking a locally-created ProblemDetail. */
-    public static final String PROPERTY = "vcmp-local";
+    /** Property key on {@link ProblemDetail#getProperties()} marking a local connection problem. */
+    public static final String PROPERTY = "vcmp-local-connection";
 
-    private LocalProblem() {
+    private LocalConnectionProblem() {
     }
 
     /**
-     * Marks the given ProblemDetail as locally created.
+     * Marks the given ProblemDetail as a locally detected connection problem.
      *
      * @param problemDetail the ProblemDetail to mark
      * @return the same instance, for chaining
@@ -38,16 +41,30 @@ public final class LocalProblem {
     }
 
     /**
-     * Returns whether the ProblemDetail was created locally by this VCMP instance.
+     * Returns whether the ProblemDetail is a connection problem detected locally by this VCMP instance.
      * Null-safe: returns false for null or unmarked ProblemDetails.
      *
      * @param problemDetail the ProblemDetail to check, may be null
-     * @return true if the ProblemDetail carries the local marker
+     * @return true if the ProblemDetail carries the local-connection marker
      */
-    public static boolean isLocal(ProblemDetail problemDetail) {
+    public static boolean isMarked(ProblemDetail problemDetail) {
         return problemDetail != null
                 && problemDetail.getProperties() != null
                 && Boolean.TRUE.equals(problemDetail.getProperties().get(PROPERTY));
+    }
+
+    /**
+     * Returns whether the failure is transport-level, meaning the peer never saw the message and
+     * retrying later may succeed: either a {@link ResponseStatusException} thrown locally by
+     * {@link VcmpCallback#await} (timeout, interrupt), or a ProblemDetail carrying the
+     * local-connection marker. A peer NAK — whatever its status code — and a deterministic local
+     * failure (e.g. a serialization error) are not transport failures: retrying them cannot help.
+     *
+     * @param e the exception a {@link VcmpCallback} await threw
+     * @return true if the failure is a retryable transport-level condition
+     */
+    public static boolean isTransportFailure(ErrorResponseException e) {
+        return e instanceof ResponseStatusException || isMarked(e.getBody());
     }
 
     /**
@@ -67,7 +84,7 @@ public final class LocalProblem {
      * {@code VcmpSession#failPendingCallbacks}).
      */
     static ProblemDetail stripForWire(ProblemDetail problemDetail) {
-        if (!isLocal(problemDetail)) {
+        if (!isMarked(problemDetail)) {
             return problemDetail;
         }
         val copy = ProblemDetail.forStatus(problemDetail.getStatus());

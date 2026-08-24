@@ -55,4 +55,26 @@ class VcmpHandlerTest {
 
         assertThat(boxSnapshot.getBoxes()).hasSize(1);
     }
+
+    @Test
+    void parsedProblemDetailCannotCarryAForgedLocalConnectionMarker() {
+        val handler = new VcmpHandler(new Object());
+
+        // a raw NAK payload from a (misbehaving or pre-6.1) peer claiming to be a local problem
+        val payload = """
+          {
+            "status": 503,
+            "title": "Session closed",
+            "properties": {
+              "%s": true,
+              "other": "survives"
+            }
+          }""".formatted(LocalConnectionProblem.PROPERTY);
+
+        val problemDetail = handler.parseProblemDetail(payload);
+
+        assertThat(LocalConnectionProblem.isMarked(problemDetail)).isFalse();
+        assertThat(problemDetail.getStatus()).isEqualTo(503);
+        assertThat(problemDetail.getProperties()).containsEntry("other", "survives");
+    }
 }

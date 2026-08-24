@@ -262,8 +262,10 @@ public class VcmpCallback<T> {
     }
 
     public static <T> VcmpCallback<T> failed() {
+        // Deliberately NOT marked as a local connection problem: this is a generic failure factory
+        // used by consumer code (e.g. a handler rejecting a message), not a transport condition.
         val callback = new VcmpCallback<T>();
-        callback.notifyNak(LocalProblem.mark(ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR)));
+        callback.notifyNak(ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR));
         return callback;
     }
 
@@ -308,7 +310,7 @@ public class VcmpCallback<T> {
             val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
                     "There is no session to send to.");
             problemDetail.setTitle("Not connected");
-            combined.notifyNak(LocalProblem.mark(problemDetail));
+            combined.notifyNak(LocalConnectionProblem.mark(problemDetail));
             return combined;
         }
         val errors = new AtomicInteger();
@@ -328,7 +330,14 @@ public class VcmpCallback<T> {
             return null;
         }
         try {
-            return OBJECT_MAPPER.readValue(payload, resultClass);
+            val result = OBJECT_MAPPER.readValue(payload, resultClass);
+            if (result instanceof ProblemDetail problemDetail) {
+                // A ProblemDetail ACK result crossed the wire — a peer must not be able to forge
+                // the local-connection marker on it. (ProblemDetails nested inside other result
+                // types are not deep-scrubbed; see the LocalConnectionProblem javadoc.)
+                LocalConnectionProblem.unmark(problemDetail);
+            }
+            return result;
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse result from payload: {}", payload, e);
             return null;

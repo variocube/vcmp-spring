@@ -85,17 +85,18 @@ class VcmpCallbackTest {
     }
 
     @Test
-    void failedWithoutProblemDetailIsLocal() {
+    void failedWithoutProblemDetailIsNotAConnectionProblem() {
+        // a generic failure factory used by consumer code, not a transport condition
         val nak = new AtomicReference<ProblemDetail>();
         VcmpCallback.failed().peekNak(nak::set);
-        assertThat(LocalProblem.isLocal(nak.get())).isTrue();
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isFalse();
     }
 
     @Test
-    void failedWithCallerSuppliedProblemDetailStaysNonLocal() {
+    void failedWithCallerSuppliedProblemDetailStaysUnmarked() {
         val nak = new AtomicReference<ProblemDetail>();
         VcmpCallback.failed(ProblemDetail.forStatus(HttpStatus.CONFLICT)).peekNak(nak::set);
-        assertThat(LocalProblem.isLocal(nak.get())).isFalse();
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isFalse();
     }
 
     @Test
@@ -123,7 +124,7 @@ class VcmpCallbackTest {
         assertThat(nak.get()).isNotNull();
         assertThat(nak.get().getStatus()).isEqualTo(503);
         assertThat(nak.get().getTitle()).isEqualTo("Not connected");
-        assertThat(LocalProblem.isLocal(nak.get())).isTrue();
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isTrue();
     }
 
     @Test
