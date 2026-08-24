@@ -75,15 +75,19 @@ Never retried, regardless of opt-in:
 - Listeners returning a `VcmpCallback` — the listener owns the outcome via its callback.
 
 A `CompletableFuture`-returning listener is retried when its future completes exceptionally. The
-final NAK carries the last attempt's error. Retries stop when the session closes. Each retried
-attempt logs a WARN with the failure; the final NAK logs an ERROR.
+final NAK carries the last attempt's error. When the session closes, no further retry is
+scheduled and an already-scheduled attempt is abandoned when it fires — the sender replays
+un-ACKed messages on reconnect, and a late server-side attempt would race that replay. The
+retry delay is capped at 10 s. Each retried attempt logs a WARN with the failure; the final
+NAK logs an ERROR.
 
 | Property                                      | Default | Meaning                                                                                        |
 | --------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
 | `vcmp.server.listener-retry.attempts`         | `5`     | Total attempts including the first, for listeners with `retry = true`. `<= 1` disables retry.  |
 | `vcmp.server.listener-retry.initial-delay-ms` | `100`   | Delay before the first retry; doubles per retry (100, 200, 400, 800 ms → ~1.5 s total budget). |
 
-Clients get the same defaults; they are tunable programmatically via the `VcmpHandler` setters.
+Clients run the fixed defaults; the properties above are server-side only. There is currently no
+API to tune retry on a client's `VcmpHandler`.
 
 ## Threading
 

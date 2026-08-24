@@ -40,13 +40,8 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
                 Integer.class, VcmpHandler.DEFAULT_LISTENER_RETRY_ATTEMPTS);
         long listenerRetryInitialDelayMs = environment.getProperty("vcmp.server.listener-retry.initial-delay-ms",
                 Long.class, VcmpHandler.DEFAULT_LISTENER_RETRY_INITIAL_DELAY_MS);
-        if (listenerRetryAttempts <= 1) {
-            log.info("VCMP listener retry is disabled.");
-        }
-        else {
-            log.info("Retrying opted-in VCMP listeners up to {} attempts, initial delay {} ms.",
-                    listenerRetryAttempts, listenerRetryInitialDelayMs);
-        }
+        log.info("VCMP listener retry: {} attempts, initial delay {} ms.",
+                listenerRetryAttempts, listenerRetryInitialDelayMs);
 
         Map<String, Object> endpointBeans = applicationContext.getBeansWithAnnotation(VcmpEndpoint.class);
         for (Object endpoint : endpointBeans.values()) {

@@ -9,9 +9,11 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -158,7 +160,60 @@ class ListenerRetryTest {
         await().until(() -> !fixture.sentFrames.isEmpty());
         assertThat(fixture.target.invocations.get()).isEqualTo(1);
         ProblemDetail problemDetail = fixture.assertSingleNak();
+        // The deliberate status must survive into the NAK — fast-fail classification and NAK
+        // payload share one resolver, so what skips retry also reports its chosen status.
+        assertThat(problemDetail.getStatus()).isEqualTo(HttpStatus.NOT_FOUND.value());
         assertThat(problemDetail.getDetail()).isEqualTo("deliberately not found");
+    }
+
+    /**
+     * A retry scheduled while the session was open must not run once it has closed: the sender
+     * replays un-ACKed messages on reconnect, and a late attempt would race that replay.
+     */
+    @Test
+    void abandonsScheduledRetryWhenSessionCloses() throws Exception {
+        Fixture fixture = new Fixture();
+        // Wide backoff so the session reliably closes before the scheduled retry fires.
+        fixture.handler.setListenerRetryInitialDelayMs(500);
+        fixture.target.failUntilAttempt = Integer.MAX_VALUE;
+
+        fixture.receive("{\"@type\":\"retry:Transient\"}");
+
+        await().until(() -> fixture.target.invocations.get() == 1);
+        fixture.open.set(false);
+
+        // The scheduled retry fires ~500 ms in; it must neither invoke the listener nor NAK.
+        await().during(Duration.ofMillis(800)).atMost(Duration.ofSeconds(2))
+                .until(() -> fixture.target.invocations.get() == 1);
+        assertThat(fixture.sentFrames).isEmpty();
+    }
+
+    /**
+     * A failure while *sending* the ACK is a transport problem, not a listener failure: the
+     * listener's effects are already committed, so a retry would duplicate them.
+     */
+    @Test
+    void ackSendFailureIsNotRetried() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.failSends = true;
+
+        fixture.receive("{\"@type\":\"retry:Transient\"}");
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
+                .until(() -> fixture.target.invocations.get() == 1);
+        assertThat(fixture.sentFrames).isEmpty();
+    }
+
+    @Test
+    void retryDelayIsClampedAgainstOverflowAndExcess() {
+        assertThat(VcmpHandler.computeRetryDelay(100, 1)).isEqualTo(100);
+        assertThat(VcmpHandler.computeRetryDelay(100, 4)).isEqualTo(800);
+        // 100 << 7 = 12800 exceeds the cap
+        assertThat(VcmpHandler.computeRetryDelay(100, 8)).isEqualTo(VcmpHandler.MAX_LISTENER_RETRY_DELAY_MS);
+        // an unclamped shift would wrap mod 64 back to a small delay here
+        assertThat(VcmpHandler.computeRetryDelay(100, 65)).isEqualTo(VcmpHandler.MAX_LISTENER_RETRY_DELAY_MS);
+        // an oversized configured initial delay is capped as well
+        assertThat(VcmpHandler.computeRetryDelay(50_000, 1)).isEqualTo(VcmpHandler.MAX_LISTENER_RETRY_DELAY_MS);
     }
 
     @Test
@@ -206,6 +261,8 @@ class ListenerRetryTest {
         final VcmpHandler handler;
         final WebSocketSession session;
         final List<String> sentFrames = new CopyOnWriteArrayList<>();
+        final AtomicBoolean open = new AtomicBoolean(true);
+        volatile boolean failSends;
 
         Fixture() throws Exception {
             handler = new VcmpHandler(target);
@@ -214,9 +271,13 @@ class ListenerRetryTest {
 
             session = mock(WebSocketSession.class);
             when(session.getId()).thenReturn("session-1");
-            when(session.isOpen()).thenReturn(true);
+            when(session.isOpen()).thenAnswer(invocation -> open.get());
             when(session.getTextMessageSizeLimit()).thenReturn(8192);
             doAnswer(invocation -> {
+                if (failSends) {
+                    // The container throws unchecked when the peer disconnects mid-send.
+                    throw new IllegalStateException("connection lost while sending");
+                }
                 sentFrames.add(((TextMessage) invocation.getArgument(0)).getPayload());
                 return null;
             }).when(session).sendMessage(any());

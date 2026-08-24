@@ -1,6 +1,7 @@
 package com.variocube.vcmp.retry;
 
 import com.variocube.vcmp.VcmpTestBase;
+import com.variocube.vcmp.client.BasicVcmpClient;
 import com.variocube.vcmp.client.VcmpConnectionManager;
 import lombok.val;
 import org.junit.jupiter.api.Test;
@@ -27,7 +28,7 @@ class RetryTest extends VcmpTestBase {
 
     @Test
     void transientListenerFailureIsRetriedAndAcked() throws Exception {
-        val client = new RetryClient();
+        val client = new BasicVcmpClient();
         try (val connection = new VcmpConnectionManager(client, URL)) {
             connection.start();
             await().until(client::isConnected);
