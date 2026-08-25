@@ -36,6 +36,13 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
         // they compete for the same resources (DB pool), so the bound must be shared.
         Semaphore connectThrottle = createConnectThrottle();
 
+        int listenerRetryAttempts = environment.getProperty("vcmp.server.listener-retry.attempts",
+                Integer.class, VcmpHandler.DEFAULT_LISTENER_RETRY_ATTEMPTS);
+        long listenerRetryInitialDelayMs = environment.getProperty("vcmp.server.listener-retry.initial-delay-ms",
+                Long.class, VcmpHandler.DEFAULT_LISTENER_RETRY_INITIAL_DELAY_MS);
+        log.info("VCMP listener retry: {} attempts, initial delay {} ms.",
+                listenerRetryAttempts, listenerRetryInitialDelayMs);
+
         Map<String, Object> endpointBeans = applicationContext.getBeansWithAnnotation(VcmpEndpoint.class);
         for (Object endpoint : endpointBeans.values()) {
             Class<?> endpointClass = ClassUtils.getTargetClass(endpoint);
@@ -46,6 +53,8 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
                 log.info("Registering endpoint {} with {}", path, endpoint.getClass().getSimpleName());
                 VcmpHandler handler = new VcmpHandler(endpoint);
                 handler.setConnectThrottle(connectThrottle);
+                handler.setListenerRetryAttempts(listenerRetryAttempts);
+                handler.setListenerRetryInitialDelayMs(listenerRetryInitialDelayMs);
                 registry.addHandler(handler, path)
                         .setAllowedOrigins("*");
             }

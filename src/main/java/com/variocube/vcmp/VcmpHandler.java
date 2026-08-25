@@ -6,20 +6,24 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.socket.*;
 
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static com.variocube.vcmp.ObjectMapperHolder.createObjectMapper;
@@ -31,7 +35,7 @@ public final class VcmpHandler implements WebSocketHandler {
     private final ObjectMapper objectMapper;
 
     private final Object target;
-    private final HashMap<Class<?>, Method> listeners;
+    private final HashMap<Class<?>, Listener> listeners;
 
     private final ConcurrentHashMap<String, VcmpSession> sessions = new ConcurrentHashMap<>();
 
@@ -47,6 +51,41 @@ public final class VcmpHandler implements WebSocketHandler {
      */
     @Setter
     private Semaphore connectThrottle;
+
+    /** Default total invocation attempts for {@code @VcmpListener(retry = true)} listeners. */
+    public static final int DEFAULT_LISTENER_RETRY_ATTEMPTS = 5;
+
+    /** Default delay before the first retry; doubles on each subsequent retry. */
+    public static final long DEFAULT_LISTENER_RETRY_INITIAL_DELAY_MS = 100;
+
+    /**
+     * Upper bound on a single retry delay. Attempts and initial delay are configurable, so the
+     * exponential doubling is clamped: an oversized attempt count must neither overflow the
+     * shift (a negative delay schedules immediately — a zero-backoff burst) nor produce
+     * multi-week delays pinned to long-dead sessions.
+     */
+    static final long MAX_LISTENER_RETRY_DELAY_MS = 10_000;
+
+    /**
+     * Bounded retry for listeners that opted in with {@code @VcmpListener(retry = true)}
+     * (variocube/center#450): a transient failure — e.g. a lock conflict rolling back the
+     * listener's transaction at commit — is retried with exponential backoff instead of
+     * immediately NAKing, because a NAKed message is dropped and the sender may only replay
+     * it on the next session connect. Total attempts including the first; {@code <= 1}
+     * disables retry.
+     */
+    @Setter
+    private int listenerRetryAttempts = DEFAULT_LISTENER_RETRY_ATTEMPTS;
+
+    /**
+     * Delay before the first retry; doubles on each subsequent retry (100, 200, 400, 800 ms
+     * with the defaults, ~1.5s total budget).
+     */
+    @Setter
+    private long listenerRetryInitialDelayMs = DEFAULT_LISTENER_RETRY_INITIAL_DELAY_MS;
+
+    private record Listener(Method method, boolean retry) {
+    }
 
     public VcmpHandler(Object target) {
 
@@ -181,12 +220,39 @@ public final class VcmpHandler implements WebSocketHandler {
     }
 
     private void handleMessagePayload(VcmpSession session, String messageId, String messagePayload) {
+        // Pre-flight: deserialization and listener lookup are deterministic — a failure here
+        // can never be fixed by a retry, so it NAKs immediately.
+        final VcmpMessage message;
+        final Listener listener;
         try {
             if (log.isTraceEnabled()) {
                 log.trace("Handling message: {}", messageId);
             }
-            VcmpMessage message = objectMapper.readValue(messagePayload, VcmpMessage.class);
-            Object returnValue = invokeListener(session, message);
+            message = objectMapper.readValue(messagePayload, VcmpMessage.class);
+            listener = this.listeners.get(message.getClass());
+            if (listener == null) {
+                throw new IllegalStateException("Could not find listener for " + message.getClass().getSimpleName());
+            }
+        }
+        catch (Exception ex) {
+            log.error("Error handling message {}", messageId, ex);
+            nak(session, messageId, createProblemDetail(ex));
+            return;
+        }
+        attemptInvocation(session, messageId, listener, message, 1);
+    }
+
+    private void attemptInvocation(VcmpSession session, String messageId, Listener listener,
+            VcmpMessage message, int attempt) {
+        if (attempt > 1 && !session.isOpen()) {
+            // The session closed during the backoff. Abandon the retry: the sender replays the
+            // un-ACKed message on reconnect, and invoking the listener here would race that
+            // replay — duplicating side effects for a result nobody can be told about.
+            log.debug("Session closed during retry backoff; abandoning attempt {} for message {}", attempt, messageId);
+            return;
+        }
+        try {
+            Object returnValue = invokeListener(session, listener, message);
 
             VcmpCallback<?> callback = Optional.ofNullable(returnValue)
                     .filter(VcmpCallback.class::isInstance)
@@ -199,14 +265,14 @@ public final class VcmpHandler implements WebSocketHandler {
                     .orElse(null);
 
             if (callback != null) {
+                // The listener owns the outcome via its callback; a retry would double-invoke it.
                 callback.onAck(result -> ack(session, messageId, result));
                 callback.onNak(error -> nak(session, messageId, error));
             }
             else if (completableFuture != null) {
                 completableFuture.thenAccept(result -> ack(session, messageId, result))
                         .exceptionally(error -> {
-                            log.info("Handler failed with exception. Sending NAK.", error);
-                            nak(session, messageId, createProblemDetail(error));
+                            handleListenerFailure(session, messageId, listener, message, attempt, error);
                             return null;
                         });
             }
@@ -216,13 +282,82 @@ public final class VcmpHandler implements WebSocketHandler {
             }
         }
         catch (InvocationTargetException ex) {
-            log.error("Error invoking listener", ex);
-            nak(session, messageId, createProblemDetail(ex.getCause()));
+            handleListenerFailure(session, messageId, listener, message, attempt, ex.getCause());
         }
         catch (Exception ex) {
-            log.error("Error invoking listener", ex);
-            nak(session, messageId, createProblemDetail(ex));
+            handleListenerFailure(session, messageId, listener, message, attempt, ex);
         }
+    }
+
+    private void handleListenerFailure(VcmpSession session, String messageId, Listener listener,
+            VcmpMessage message, int attempt, Throwable error) {
+        // Unwrap here, at the single choke point, so a deliberate status hidden inside a
+        // CompletionException is recognized on the synchronous path too (a listener that
+        // internally joins a failed future rethrows the wrapper).
+        val cause = unwrap(error);
+        // Failures that resolve to a deliberate error status are never retried: the listener
+        // chose that outcome, and delaying its NAK would break fast-fail semantics.
+        val deliberateStatus = resolveDeliberateStatus(cause);
+        val retryable = listener.retry() && deliberateStatus == null;
+        if (retryable && attempt < listenerRetryAttempts && session.isOpen()) {
+            val delay = computeRetryDelay(listenerRetryInitialDelayMs, attempt);
+            // WARN with the full stack so recurring failure clusters stay greppable even
+            // when retries absorb them.
+            log.warn("Listener for {} failed on attempt {}/{} for message {}; retrying in {} ms",
+                    message.getClass().getSimpleName(), attempt, listenerRetryAttempts, messageId, delay, cause);
+            Executor.getExecutor().schedule(
+                    () -> attemptInvocation(session, messageId, listener, message, attempt + 1),
+                    delay, TimeUnit.MILLISECONDS);
+        }
+        else {
+            log.error("Listener for {} failed after {} attempt(s) for message {}. Sending NAK.",
+                    message.getClass().getSimpleName(), attempt, messageId, cause);
+            nak(session, messageId, deliberateStatus != null ? deliberateStatus : createProblemDetail(cause));
+        }
+    }
+
+    static long computeRetryDelay(long initialDelayMs, int attempt) {
+        // Clamping the base first makes overflow structurally impossible (base < 2^14,
+        // shift <= 20) and keeps a configured zero/negative delay from degenerating into a
+        // zero-backoff burst.
+        val base = Math.min(Math.max(1, initialDelayMs), MAX_LISTENER_RETRY_DELAY_MS);
+        return Math.min(MAX_LISTENER_RETRY_DELAY_MS, base << Math.min(attempt - 1, 20));
+    }
+
+    /**
+     * Whether the listener retry mechanism classifies this failure as retryable, i.e. it does
+     * not resolve to a deliberate error status ({@link ErrorResponseException} or a merged
+     * {@code @ResponseStatus} annotation, unwrapped from async wrappers). Public so consumers
+     * can pin their exception taxonomy against the classifier they actually ship with.
+     */
+    public static boolean isRetryable(Throwable error) {
+        return resolveDeliberateStatus(unwrap(error)) == null;
+    }
+
+    /**
+     * Resolves the error status a listener deliberately chose for this failure, or null for an
+     * unexpected failure. Single source of truth for both the retry classification
+     * ({@link #isRetryable}) and the NAK payload ({@link #createProblemDetail}), so the two can
+     * never drift: whatever fast-fails also NAKs with its chosen status.
+     */
+    private static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
+        if (throwable instanceof ErrorResponseException errorResponseException) {
+            return errorResponseException.getBody();
+        }
+        val responseStatus = AnnotatedElementUtils.findMergedAnnotation(throwable.getClass(), ResponseStatus.class);
+        if (responseStatus != null) {
+            val detail = hasText(responseStatus.reason()) ? responseStatus.reason() : throwable.getMessage();
+            return ProblemDetail.forStatusAndDetail(responseStatus.code(), detail);
+        }
+        return null;
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        while ((error instanceof CompletionException || error instanceof ExecutionException)
+                && error.getCause() != null) {
+            error = error.getCause();
+        }
+        return error;
     }
 
     private void nak(VcmpSession session, String messageId, ProblemDetail problemDetail) {
@@ -234,7 +369,12 @@ public final class VcmpHandler implements WebSocketHandler {
                 val payload = problemDetail != null ? objectMapper.writeValueAsString(problemDetail) : null;
                 session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
-            catch (IOException e) {
+            catch (Exception e) {
+                // A NAK/ACK transport failure must never escape into attemptInvocation, where it
+                // would be indistinguishable from a listener failure and could re-invoke a
+                // listener whose effects are already committed. Catches the container
+                // RuntimeExceptions thrown when the peer disconnects mid-send, like
+                // VcmpSession.send does.
                 log.error("Error sending NAK", e);
             }
         }
@@ -249,18 +389,17 @@ public final class VcmpHandler implements WebSocketHandler {
                 val payload = result != null ? objectMapper.writeValueAsString(result) : null;
                 session.sendFrame(VcmpFrame.createAck(messageId, payload));
             }
-            catch (IOException e) {
+            catch (Exception e) {
+                // See nak(): must not escape into the retry path of attemptInvocation.
                 log.error("Error sending ACK", e);
             }
         }
     }
 
-    private Object invokeListener(VcmpSession session, VcmpMessage message) throws InvocationTargetException, IllegalAccessException {
-        Method listener = this.listeners.get(message.getClass());
-        if (listener == null) {
-            throw new IllegalStateException("Could not find listener for " + message.getClass().getSimpleName());
-        }
-        Parameter[] parameters = listener.getParameters();
+    private Object invokeListener(VcmpSession session, Listener listener, VcmpMessage message)
+            throws InvocationTargetException, IllegalAccessException {
+        Method method = listener.method();
+        Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++) {
             Class<?> type = parameters[i].getType();
@@ -274,7 +413,7 @@ public final class VcmpHandler implements WebSocketHandler {
                 args[i] = session.getUsername();
             }
         }
-        return listener.invoke(target, args);
+        return method.invoke(target, args);
     }
 
 
@@ -283,20 +422,22 @@ public final class VcmpHandler implements WebSocketHandler {
         return true;
     }
 
-    private static HashMap<Class<?>, Method> findListeners(Object target) {
+    private static HashMap<Class<?>, Listener> findListeners(Object target) {
         Class<?> targetClass = ClassUtils.getTargetClass(target);
         log.info("Detecting listeners on {}", targetClass.getSimpleName());
-        HashMap<Class<?>, Method> listeners = new HashMap<>();
+        HashMap<Class<?>, Listener> listeners = new HashMap<>();
         for (Method method : targetClass.getMethods()) {
-            if (method.getAnnotation(VcmpListener.class) != null) {
+            VcmpListener annotation = method.getAnnotation(VcmpListener.class);
+            if (annotation != null) {
                 Optional<Class<?>> messageType = Stream.of(method.getParameters())
                         .filter(parameter -> VcmpMessage.class.isAssignableFrom(parameter.getType()))
                         .findFirst()
                         .map(Parameter::getType);
 
                 if (messageType.isPresent()) {
-                    log.info(" - `{}` handled by `{}`", messageType.get().getSimpleName(), method.getName());
-                    listeners.put(messageType.get(), method);
+                    log.info(" - `{}` handled by `{}`{}", messageType.get().getSimpleName(), method.getName(),
+                            annotation.retry() ? " (with retry)" : "");
+                    listeners.put(messageType.get(), new Listener(method, annotation.retry()));
                 }
                 else {
                     log.error("Could not detect message type on @VcmpListener {}#{}", targetClass.getSimpleName(), method.getName());
@@ -315,8 +456,9 @@ public final class VcmpHandler implements WebSocketHandler {
     }
 
     static ProblemDetail createProblemDetail(Throwable throwable) {
-        if (throwable instanceof ErrorResponseException errorResponseException) {
-            return errorResponseException.getBody();
+        val deliberateStatus = resolveDeliberateStatus(throwable);
+        if (deliberateStatus != null) {
+            return deliberateStatus;
         }
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
