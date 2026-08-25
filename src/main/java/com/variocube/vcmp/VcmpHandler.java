@@ -298,9 +298,9 @@ public final class VcmpHandler implements WebSocketHandler {
         // Failures that resolve to a deliberate error status are never retried: the listener
         // chose that outcome, and delaying its NAK would break fast-fail semantics.
         val deliberateStatus = resolveDeliberateStatus(cause);
-        boolean retryable = listener.retry() && deliberateStatus == null;
+        val retryable = listener.retry() && deliberateStatus == null;
         if (retryable && attempt < listenerRetryAttempts && session.isOpen()) {
-            long delay = computeRetryDelay(listenerRetryInitialDelayMs, attempt);
+            val delay = computeRetryDelay(listenerRetryInitialDelayMs, attempt);
             // WARN with the full stack so recurring failure clusters stay greppable even
             // when retries absorb them.
             log.warn("Listener for {} failed on attempt {}/{}; retrying in {} ms",
@@ -320,7 +320,7 @@ public final class VcmpHandler implements WebSocketHandler {
         // Clamping the base first makes overflow structurally impossible (base < 2^14,
         // shift <= 20) and keeps a configured zero/negative delay from degenerating into a
         // zero-backoff burst.
-        long base = Math.min(Math.max(1, initialDelayMs), MAX_LISTENER_RETRY_DELAY_MS);
+        val base = Math.min(Math.max(1, initialDelayMs), MAX_LISTENER_RETRY_DELAY_MS);
         return Math.min(MAX_LISTENER_RETRY_DELAY_MS, base << Math.min(attempt - 1, 20));
     }
 

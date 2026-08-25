@@ -98,7 +98,8 @@ class ListenerRetryTest {
         public void handleWrappedBadRequest(WrappedBadRequestMessage message) {
             invocations.incrementAndGet();
             // the shape thrown by joining a failed future internally
-            throw new CompletionException(new ResponseStatusException(HttpStatus.BAD_REQUEST, "wrapped but deliberate"));
+            throw new CompletionException(
+                    new ResponseStatusException(HttpStatus.BAD_REQUEST, "wrapped but deliberate"));
         }
 
         @VcmpListener(retry = true)

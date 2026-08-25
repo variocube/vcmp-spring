@@ -16,7 +16,9 @@ public @interface VcmpListener {
      * transaction that leaves no partial effects on rollback. With retry enabled, the listener
      * may be invoked more than once for the same message. Failures that resolve to a deliberate
      * error status ({@code ErrorResponseException} or an exception annotated with
-     * {@code @ResponseStatus}) are never retried.
+     * {@code @ResponseStatus}) are never retried. That classification is exposed as
+     * {@link VcmpHandler#isRetryable} — pin your listener's exception taxonomy against it in a
+     * test, so an innocuous exception refactor cannot silently flip retry behavior.
      */
     boolean retry() default false;
 }
