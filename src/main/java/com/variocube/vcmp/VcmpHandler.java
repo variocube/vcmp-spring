@@ -303,15 +303,15 @@ public final class VcmpHandler implements WebSocketHandler {
             val delay = computeRetryDelay(listenerRetryInitialDelayMs, attempt);
             // WARN with the full stack so recurring failure clusters stay greppable even
             // when retries absorb them.
-            log.warn("Listener for {} failed on attempt {}/{}; retrying in {} ms",
-                    message.getClass().getSimpleName(), attempt, listenerRetryAttempts, delay, cause);
+            log.warn("Listener for {} failed on attempt {}/{} for message {}; retrying in {} ms",
+                    message.getClass().getSimpleName(), attempt, listenerRetryAttempts, messageId, delay, cause);
             Executor.getExecutor().schedule(
                     () -> attemptInvocation(session, messageId, listener, message, attempt + 1),
                     delay, TimeUnit.MILLISECONDS);
         }
         else {
-            log.error("Listener for {} failed after {} attempt(s). Sending NAK.",
-                    message.getClass().getSimpleName(), attempt, cause);
+            log.error("Listener for {} failed after {} attempt(s) for message {}. Sending NAK.",
+                    message.getClass().getSimpleName(), attempt, messageId, cause);
             nak(session, messageId, deliberateStatus != null ? deliberateStatus : createProblemDetail(cause));
         }
     }
