@@ -249,7 +249,12 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending ACK for message: {}", messageId);
             }
             try {
-                val payload = result != null ? objectMapper.writeValueAsString(result) : null;
+                // Never leak the local-connection marker over the wire — symmetric with nak(): a relay-style
+                // listener may return a locally-failed ProblemDetail as its ACK result.
+                val wireResult = result instanceof ProblemDetail problemDetail
+                        ? LocalConnectionProblem.stripForWire(problemDetail)
+                        : result;
+                val payload = wireResult != null ? objectMapper.writeValueAsString(wireResult) : null;
                 session.sendFrame(VcmpFrame.createAck(messageId, payload));
             }
             catch (IOException e) {

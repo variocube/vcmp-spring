@@ -6,6 +6,7 @@ import lombok.val;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
 
 
@@ -42,5 +43,20 @@ class ErrorTest extends VcmpTestBase {
         // survive the NAK frame: to this client it is a peer rejection.
         assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(LocalConnectionProblem.isMarked(exception.getBody())).isFalse();
+    }
+
+    @Test
+    void markedProblemDetailAckResultArrivesAtPeerWithoutMarker() {
+        await().until(client::isConnected);
+
+        // The endpoint ACKs with a marked ProblemDetail as the RESULT — the marker must not be
+        // observable on the ACK channel either.
+        val result = client.send(new AckProblemMessage(), ProblemDetail.class)
+                .await();
+
+        assertThat(result).isNotNull();
+        assertThat(result.getStatus()).isEqualTo(503);
+        assertThat(result.getTitle()).isEqualTo("Session closed");
+        assertThat(LocalConnectionProblem.isMarked(result)).isFalse();
     }
 }

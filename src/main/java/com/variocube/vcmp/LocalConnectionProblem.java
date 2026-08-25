@@ -54,11 +54,15 @@ public final class LocalConnectionProblem {
     }
 
     /**
-     * Returns whether the failure is transport-level, meaning the peer never saw the message and
-     * retrying later may succeed: either a {@link ResponseStatusException} thrown locally by
-     * {@link VcmpCallback#await} (timeout, interrupt), or a ProblemDetail carrying the
-     * local-connection marker. A peer NAK — whatever its status code — and a deterministic local
-     * failure (e.g. a serialization error) are not transport failures: retrying them cannot help.
+     * Returns whether the failure is transport-level, meaning the message <em>may never have reached</em>
+     * the peer and retrying later may succeed: either a {@link ResponseStatusException} thrown locally by
+     * {@link VcmpCallback#await} (timeout, interrupt), or a ProblemDetail carrying the local-connection
+     * marker. A peer NAK — whatever its status code — and a deterministic local failure (e.g. a
+     * serialization error) are not transport failures: retrying them cannot help.
+     * <p>
+     * Note that "may never have reached" is not "did not reach": an ACK lost to a connection drop or an
+     * await timeout still means the peer's listener may have run — retry only what is idempotent (see the
+     * callback-semantics section of the README).
      *
      * @param e the exception a {@link VcmpCallback} await threw
      * @return true if the failure is a retryable transport-level condition

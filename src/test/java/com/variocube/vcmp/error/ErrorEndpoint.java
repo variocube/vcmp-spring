@@ -4,6 +4,7 @@ import com.variocube.vcmp.LocalConnectionProblem;
 import com.variocube.vcmp.VcmpCallback;
 import com.variocube.vcmp.VcmpListener;
 import com.variocube.vcmp.server.VcmpEndpoint;
+import lombok.val;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.server.ResponseStatusException;
@@ -21,5 +22,15 @@ public class ErrorEndpoint {
         // chains into the outbound NAK — the marker must be stripped at the wire boundary.
         return VcmpCallback.failed(
                 LocalConnectionProblem.mark(ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR)));
+    }
+
+    @VcmpListener
+    public VcmpCallback<ProblemDetail> ackWithProblem(AckProblemMessage message) {
+        // Relay pattern: ACKs with a locally marked ProblemDetail as the RESULT — the marker must be
+        // stripped from the ACK frame just like from NAK frames.
+        val problemDetail = LocalConnectionProblem.mark(
+                ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        problemDetail.setTitle("Session closed");
+        return VcmpCallback.completed(problemDetail);
     }
 }

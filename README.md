@@ -52,11 +52,13 @@ serialized and removed from parsed NAK payloads and top-level `ProblemDetail` AC
 can neither observe nor forge it on those channels. (ProblemDetails nested inside other message or
 result types are not deep-scrubbed — do not apply the marker check to those.)
 
-Consumers that need to distinguish "the peer never saw this message and retrying later may succeed"
-from "this message failed for good" should use
+Consumers that need to distinguish "this message may never have reached the peer and retrying later
+may succeed" from "this message failed for good" should use
 `LocalConnectionProblem.isTransportFailure(errorResponseException)` — it also covers the timeout and
 interrupt cases, which surface as a locally thrown `ResponseStatusException` from
-`VcmpCallback.await(...)` rather than a marked ProblemDetail. Never match on status codes: a peer's
+`VcmpCallback.await(...)` rather than a marked ProblemDetail. Note that a transport failure does not guarantee the peer never processed the message — an ACK lost
+to a connection drop still means the listener ran; retry only what is idempotent (see above). Never
+match on status codes: a peer's
 NAK may carry a `503` or `408` of its own.
 
 **VCMP does not impose a timeout on acknowledgement.** As long as the session stays open, a
