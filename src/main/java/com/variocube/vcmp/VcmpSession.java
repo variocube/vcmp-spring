@@ -65,6 +65,9 @@ public class VcmpSession {
             vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
         }
         catch (IOException e) {
+            // Deliberately NOT marked as a local connection problem: a serialization failure is
+            // deterministic — retrying the same message cannot succeed, so consumers must treat it
+            // like a rejection (with whatever give-up path they have), not as "retry later".
             return VcmpCallback.failed(createProblemDetail(e));
         }
 
@@ -78,8 +81,10 @@ public class VcmpSession {
             return VcmpCallback.failed(sessionClosedProblemDetail(e.getMessage()));
         }
         catch (IOException e) {
+            // Transient send failure on an open session (e.g. the send-lock timeout under
+            // contention): the message never left this side and retrying later may succeed.
             callbacks.remove(vcmpFrame.getId());
-            return VcmpCallback.failed(createProblemDetail(e));
+            return VcmpCallback.failed(sendFailedProblemDetail(e));
         }
         catch (RuntimeException e) {
             // e.g. an IllegalStateException from the container when the peer disconnects
@@ -92,9 +97,22 @@ public class VcmpSession {
                 return VcmpCallback.failed(sessionClosedProblemDetail(
                         "The session was closed while sending the message."));
             }
-            return VcmpCallback.failed(createProblemDetail(e));
+            return VcmpCallback.failed(sendFailedProblemDetail(e));
         }
         return callback;
+    }
+
+    /**
+     * Creates the marked {@code 500 Send failed} problem detail for a transient failure while sending on an
+     * open session. A dedicated ProblemDetail rather than {@code createProblemDetail}: that helper passes an
+     * {@code ErrorResponseException}'s body through unchanged — marking it here would mutate a ProblemDetail
+     * the consumer may hold — and its "Message handling failed" title mislabels a send failure.
+     */
+    private static ProblemDetail sendFailedProblemDetail(Throwable throwable) {
+        val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
+                throwable.getMessage());
+        problemDetail.setTitle("Send failed");
+        return LocalConnectionProblem.mark(problemDetail);
     }
 
     /**
@@ -147,7 +165,7 @@ public class VcmpSession {
     private static ProblemDetail sessionClosedProblemDetail(String detail) {
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
         problemDetail.setTitle("Session closed");
-        return problemDetail;
+        return LocalConnectionProblem.mark(problemDetail);
     }
 
     public void initiateHeartbeat(int intervalMillis) {

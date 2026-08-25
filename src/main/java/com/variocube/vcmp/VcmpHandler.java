@@ -231,7 +231,10 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending NAK for message {} with error {}", messageId, problemDetail);
             }
             try {
-                val payload = problemDetail != null ? objectMapper.writeValueAsString(problemDetail) : null;
+                // Never leak the local marker over the wire: a chained NAK may carry a ProblemDetail
+                // that failed locally on this side (e.g. a relay forwarding while disconnected).
+                val wireProblemDetail = LocalConnectionProblem.stripForWire(problemDetail);
+                val payload = wireProblemDetail != null ? objectMapper.writeValueAsString(wireProblemDetail) : null;
                 session.sendFrame(VcmpFrame.createNak(messageId, payload));
             }
             catch (IOException e) {
@@ -246,7 +249,12 @@ public final class VcmpHandler implements WebSocketHandler {
                 log.trace("Sending ACK for message: {}", messageId);
             }
             try {
-                val payload = result != null ? objectMapper.writeValueAsString(result) : null;
+                // Never leak the local-connection marker over the wire — symmetric with nak(): a relay-style
+                // listener may return a locally-failed ProblemDetail as its ACK result.
+                val wireResult = result instanceof ProblemDetail problemDetail
+                        ? LocalConnectionProblem.stripForWire(problemDetail)
+                        : result;
+                val payload = wireResult != null ? objectMapper.writeValueAsString(wireResult) : null;
                 session.sendFrame(VcmpFrame.createAck(messageId, payload));
             }
             catch (IOException e) {
@@ -316,10 +324,15 @@ public final class VcmpHandler implements WebSocketHandler {
 
     static ProblemDetail createProblemDetail(Throwable throwable) {
         if (throwable instanceof ErrorResponseException errorResponseException) {
+            // Deliberate listener status (or an already-classified body) — pass through unchanged.
             return errorResponseException.getBody();
         }
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
+        // Deliberately NOT marked as a local connection problem: this fallback also covers
+        // deterministic local failures (e.g. a message that cannot be serialized) and outbound
+        // listener-failure NAKs — neither is a retryable transport condition. Call sites that
+        // represent transient connection-level failures mark the result themselves.
         return problemDetail;
     }
 
@@ -328,7 +341,11 @@ public final class VcmpHandler implements WebSocketHandler {
             return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Message handling failed.");
         }
         try {
-            return objectMapper.readValue(payload, ProblemDetail.class);
+            val problemDetail = objectMapper.readValue(payload, ProblemDetail.class);
+            // Never trust a peer-sent marker: a ProblemDetail that crossed the wire is by definition
+            // not local, and an older or misbehaving peer must not be able to forge it.
+            LocalConnectionProblem.unmark(problemDetail);
+            return problemDetail;
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse ProblemDetail from payload: {}", payload, e);
             return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to parse ProblemDetail");

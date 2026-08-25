@@ -28,6 +28,8 @@ additionally failed with a NAK when the message can never be acknowledged:
 | Sending on an already closed session | `503` | `Session closed` |
 | The session closed while the ACK was still outstanding | `503` | `Session closed` |
 | Sending without a session (`BasicVcmpClient.send` while disconnected, `VcmpSessionPool.send` to a recipient with no connected session) | `503` | `Not connected` |
+| Transient failure while sending on an open session (e.g. the send-lock timeout under contention) | `500` | `Send failed` |
+| The outbound message could not be serialized (deterministic — retrying cannot help) | `500` | `Message handling failed` |
 
 A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
@@ -37,6 +39,28 @@ All `503` cases mirror what the JavaScript implementation reports for the same c
 (variocube/vcmp-js#32), so a `503` can be treated uniformly as a retryable transport condition.
 Note that a `503` does not imply the peer never processed the message — an ACK lost to a connection
 drop still means the listener ran. Retry only what is idempotent.
+
+### Local connection problems vs peer NAKs
+
+Every ProblemDetail representing a **connection-level problem detected locally** by this VCMP
+instance — the `503` rows and the `500 Send failed` row above — carries the property
+`LocalConnectionProblem.PROPERTY` (`"vcmp-local-connection"`). Deliberately **not** marked: the
+serialization failure of an outbound message (deterministic — retrying cannot help) and the generic
+no-arg `VcmpCallback.failed()` (a handler-level failure, not a transport condition).
+
+NAK-delivered ProblemDetails from a peer never carry the marker: it is stripped when a NAK frame is
+serialized and removed from parsed NAK payloads and top-level `ProblemDetail` ACK results, so a peer
+can neither observe nor forge it on those channels. (ProblemDetails nested inside other message or
+result types are not deep-scrubbed — do not apply the marker check to those.)
+
+Consumers that need to distinguish "this message may never have reached the peer and retrying later
+may succeed" from "this message failed for good" should use
+`LocalConnectionProblem.isTransportFailure(errorResponseException)` — it also covers the timeout and
+interrupt cases, which surface as a locally thrown `ResponseStatusException` from
+`VcmpCallback.await(...)` rather than a marked ProblemDetail. Note that a transport failure does not
+guarantee the peer never processed the message — an ACK lost to a connection drop still means the
+listener ran; retry only what is idempotent (see above). Never match on status codes: a peer's NAK
+may carry a `503` or `408` of its own.
 
 **VCMP does not impose a timeout on acknowledgement.** As long as the session stays open, a
 callback waits for a peer that is slow — a listener may legitimately take minutes. Bounding that
