@@ -242,7 +242,8 @@ public final class VcmpHandler implements WebSocketHandler {
         attemptInvocation(session, messageId, listener, message, 1);
     }
 
-    private void attemptInvocation(VcmpSession session, String messageId, Listener listener, VcmpMessage message, int attempt) {
+    private void attemptInvocation(VcmpSession session, String messageId, Listener listener,
+            VcmpMessage message, int attempt) {
         if (attempt > 1 && !session.isOpen()) {
             // The session closed during the backoff. Abandon the retry: the sender replays the
             // un-ACKed message on reconnect, and invoking the listener here would race that
@@ -271,7 +272,7 @@ public final class VcmpHandler implements WebSocketHandler {
             else if (completableFuture != null) {
                 completableFuture.thenAccept(result -> ack(session, messageId, result))
                         .exceptionally(error -> {
-                            handleListenerFailure(session, messageId, listener, message, attempt, unwrap(error));
+                            handleListenerFailure(session, messageId, listener, message, attempt, error);
                             return null;
                         });
             }
@@ -290,43 +291,53 @@ public final class VcmpHandler implements WebSocketHandler {
 
     private void handleListenerFailure(VcmpSession session, String messageId, Listener listener,
             VcmpMessage message, int attempt, Throwable error) {
-        boolean retryable = listener.retry() && !isFastFail(error);
+        // Unwrap here, at the single choke point, so a deliberate status hidden inside a
+        // CompletionException is recognized on the synchronous path too (a listener that
+        // internally joins a failed future rethrows the wrapper).
+        val cause = unwrap(error);
+        // Failures that resolve to a deliberate error status are never retried: the listener
+        // chose that outcome, and delaying its NAK would break fast-fail semantics.
+        val deliberateStatus = resolveDeliberateStatus(cause);
+        boolean retryable = listener.retry() && deliberateStatus == null;
         if (retryable && attempt < listenerRetryAttempts && session.isOpen()) {
             long delay = computeRetryDelay(listenerRetryInitialDelayMs, attempt);
             // WARN with the full stack so recurring failure clusters stay greppable even
             // when retries absorb them.
             log.warn("Listener for {} failed on attempt {}/{}; retrying in {} ms",
-                    message.getClass().getSimpleName(), attempt, listenerRetryAttempts, delay, error);
+                    message.getClass().getSimpleName(), attempt, listenerRetryAttempts, delay, cause);
             Executor.getExecutor().schedule(
                     () -> attemptInvocation(session, messageId, listener, message, attempt + 1),
                     delay, TimeUnit.MILLISECONDS);
         }
         else {
             log.error("Listener for {} failed after {} attempt(s). Sending NAK.",
-                    message.getClass().getSimpleName(), attempt, error);
-            nak(session, messageId, createProblemDetail(error));
+                    message.getClass().getSimpleName(), attempt, cause);
+            nak(session, messageId, deliberateStatus != null ? deliberateStatus : createProblemDetail(cause));
         }
     }
 
     static long computeRetryDelay(long initialDelayMs, int attempt) {
-        if (initialDelayMs >= MAX_LISTENER_RETRY_DELAY_MS) {
-            return MAX_LISTENER_RETRY_DELAY_MS;
-        }
-        return Math.min(MAX_LISTENER_RETRY_DELAY_MS, initialDelayMs << Math.min(attempt - 1, 20));
+        // Clamping the base first makes overflow structurally impossible (base < 2^14,
+        // shift <= 20) and keeps a configured zero/negative delay from degenerating into a
+        // zero-backoff burst.
+        long base = Math.min(Math.max(1, initialDelayMs), MAX_LISTENER_RETRY_DELAY_MS);
+        return Math.min(MAX_LISTENER_RETRY_DELAY_MS, base << Math.min(attempt - 1, 20));
     }
 
     /**
-     * Failures that resolve to a deliberate error status are never retried: the listener
-     * chose that outcome, and delaying its NAK would break fast-fail semantics.
+     * Whether the listener retry mechanism classifies this failure as retryable, i.e. it does
+     * not resolve to a deliberate error status ({@link ErrorResponseException} or a merged
+     * {@code @ResponseStatus} annotation, unwrapped from async wrappers). Public so consumers
+     * can pin their exception taxonomy against the classifier they actually ship with.
      */
-    private static boolean isFastFail(Throwable error) {
-        return resolveDeliberateStatus(error) != null;
+    public static boolean isRetryable(Throwable error) {
+        return resolveDeliberateStatus(unwrap(error)) == null;
     }
 
     /**
      * Resolves the error status a listener deliberately chose for this failure, or null for an
      * unexpected failure. Single source of truth for both the retry classification
-     * ({@link #isFastFail}) and the NAK payload ({@link #createProblemDetail}), so the two can
+     * ({@link #isRetryable}) and the NAK payload ({@link #createProblemDetail}), so the two can
      * never drift: whatever fast-fails also NAKs with its chosen status.
      */
     private static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
@@ -385,7 +396,8 @@ public final class VcmpHandler implements WebSocketHandler {
         }
     }
 
-    private Object invokeListener(VcmpSession session, Listener listener, VcmpMessage message) throws InvocationTargetException, IllegalAccessException {
+    private Object invokeListener(VcmpSession session, Listener listener, VcmpMessage message)
+            throws InvocationTargetException, IllegalAccessException {
         Method method = listener.method();
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];

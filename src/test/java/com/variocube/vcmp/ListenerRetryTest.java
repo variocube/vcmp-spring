@@ -12,6 +12,7 @@ import org.springframework.web.socket.WebSocketSession;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -53,6 +54,10 @@ class ListenerRetryTest {
     static class FutureMessage implements VcmpMessage {
     }
 
+    @JsonTypeName("retry:WrappedBadRequest")
+    static class WrappedBadRequestMessage implements VcmpMessage {
+    }
+
     @ResponseStatus(HttpStatus.NOT_FOUND)
     static class AnnotatedNotFoundException extends RuntimeException {
         AnnotatedNotFoundException() {
@@ -87,6 +92,13 @@ class ListenerRetryTest {
         public void handleAnnotated(AnnotatedMessage message) {
             invocations.incrementAndGet();
             throw new AnnotatedNotFoundException();
+        }
+
+        @VcmpListener(retry = true)
+        public void handleWrappedBadRequest(WrappedBadRequestMessage message) {
+            invocations.incrementAndGet();
+            // the shape thrown by joining a failed future internally
+            throw new CompletionException(new ResponseStatusException(HttpStatus.BAD_REQUEST, "wrapped but deliberate"));
         }
 
         @VcmpListener(retry = true)
@@ -214,6 +226,26 @@ class ListenerRetryTest {
         assertThat(VcmpHandler.computeRetryDelay(100, 65)).isEqualTo(VcmpHandler.MAX_LISTENER_RETRY_DELAY_MS);
         // an oversized configured initial delay is capped as well
         assertThat(VcmpHandler.computeRetryDelay(50_000, 1)).isEqualTo(VcmpHandler.MAX_LISTENER_RETRY_DELAY_MS);
+        // a configured zero/negative delay must not degenerate into a zero-backoff burst
+        assertThat(VcmpHandler.computeRetryDelay(0, 3)).isEqualTo(4);
+        assertThat(VcmpHandler.computeRetryDelay(-100, 1)).isEqualTo(1);
+    }
+
+    /**
+     * A deliberate status must be recognized even when a synchronous listener rethrows it
+     * wrapped in a CompletionException (e.g. from joining a failed future internally).
+     */
+    @Test
+    void doesNotRetryWrappedDeliberateStatusOnSyncPath() throws Exception {
+        Fixture fixture = new Fixture();
+
+        fixture.receive("{\"@type\":\"retry:WrappedBadRequest\"}");
+
+        await().until(() -> !fixture.sentFrames.isEmpty());
+        assertThat(fixture.target.invocations.get()).isEqualTo(1);
+        ProblemDetail problemDetail = fixture.assertSingleNak();
+        assertThat(problemDetail.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+        assertThat(problemDetail.getDetail()).isEqualTo("wrapped but deliberate");
     }
 
     @Test

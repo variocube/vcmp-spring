@@ -78,6 +78,8 @@ A `CompletableFuture`-returning listener is retried when its future completes ex
 final NAK carries the last attempt's error. When the session closes, no further retry is
 scheduled and an already-scheduled attempt is abandoned when it fires — the sender replays
 un-ACKed messages on reconnect, and a late server-side attempt would race that replay. The
+abandonment is best-effort: on a half-open connection `isOpen()` reports true until the
+heartbeat timeout, so delivery stays at-least-once and retried listeners must be idempotent. The
 retry delay is capped at 10 s. Each retried attempt logs a WARN with the failure; the final
 NAK logs an ERROR.
 
