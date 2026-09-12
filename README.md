@@ -63,3 +63,14 @@ application startup (the web server port opens before startup has finished):
 |----------|---------|---------|
 | `vcmp.server.ready-gate.enabled` | `true` | Reject websocket handshakes with `503` + `Retry-After` until `ApplicationReadyEvent`. The filter runs at highest precedence, before Spring Security. Clients reconnect with retry. |
 | `vcmp.server.connect-concurrency` | `8` | Bound on concurrently running `@VcmpSessionConnected` handlers, shared across all endpoints of the application. Queues connect storms instead of exhausting resources (e.g. the DB pool). `<= 0` disables throttling. |
+
+## Refreshing client authentication
+
+`@VcmpHttpHeaders` runs immediately before **every** handshake, including automatic reconnects,
+with a fresh `HttpHeaders` instance. Mint short-lived Bearer tokens inside this hook rather than
+at bean construction. Do not retain the supplied headers or mutate them asynchronously.
+
+If the hook fails, VCMP skips the handshake and follows the normal reconnect policy. It never
+reuses headers from a previous attempt or sends an anonymous handshake after a refresh failure.
+Existing static-header hooks remain compatible, but now run once per attempt instead of once
+when the connection manager is constructed. Keep hook work brief.

@@ -85,7 +85,7 @@ public class VcmpConnectionManager implements Closeable {
     private static final Random RANDOM = new Random();
 
     private final StandardWebSocketClient webSocketClient;
-    private final WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
+    private final Object target;
     private final Object lifecycleMonitor = new Object();
 
     private final URI uri;
@@ -113,11 +113,10 @@ public class VcmpConnectionManager implements Closeable {
 
 
     public VcmpConnectionManager(Object target, String uriTemplate, Object... uriVariables) {
+        this.target = target;
         this.uri = UriComponentsBuilder.fromUriString(uriTemplate).buildAndExpand(uriVariables).encode().toUri();
         this.vcmpHandler = new VcmpHandler(target);
         this.vcmpHandler.setDisconnectHandler(this::handleDisconnect);
-
-        this.headers.put(WebSocketHttpHeaders.SEC_WEBSOCKET_EXTENSIONS, Collections.singletonList("permessage-deflate"));
 
         WebSocketContainer webSocketContainer = new WsWebSocketContainer();
         webSocketContainer.setDefaultMaxTextMessageBufferSize(MAX_TEXT_MESSAGE_BUFFER_SIZE);
@@ -125,11 +124,13 @@ public class VcmpConnectionManager implements Closeable {
         this.webSocketClient  = new StandardWebSocketClient(webSocketContainer);
         this.webSocketClient.setUserProperties(Collections.singletonMap(Constants.BLOCKING_SEND_TIMEOUT_PROPERTY, SEND_TIMEOUT));
 
-        try {
-            MethodAnnotationUtils.invokeMethodWithAnnotation(target, VcmpHttpHeaders.class, headers);
-        } catch (InvocationTargetException | IllegalAccessException e) {
-            throw new RuntimeException("Error invoking @VcmpHttpHeaders method.", e);
-        }
+    }
+
+    private WebSocketHttpHeaders createHeaders() throws InvocationTargetException, IllegalAccessException {
+        val headers = new WebSocketHttpHeaders();
+        headers.put(WebSocketHttpHeaders.SEC_WEBSOCKET_EXTENSIONS, Collections.singletonList("permessage-deflate"));
+        MethodAnnotationUtils.invokeMethodWithAnnotation(target, VcmpHttpHeaders.class, headers);
+        return headers;
     }
 
     public void start() {
@@ -181,40 +182,52 @@ public class VcmpConnectionManager implements Closeable {
         synchronized (this.lifecycleMonitor) {
             if (this.isRunning) {
                 log.info("Initiate handshake with {}", this.uri);
-                // shake them hands...
-                webSocketClient.execute(this.vcmpHandler, this.headers, this.uri)
-                    .thenAccept(session -> {
-                        // The handshake completes asynchronously, so stop() may already have run by
-                        // the time we get here. Decide what to do under the same lock stop() uses:
-                        // if we are no longer running, closeSession() has already executed (and found
-                        // webSocketSession still null, closing nothing), so we must close this
-                        // freshly-established session ourselves — otherwise it leaks and stays open
-                        // until the JVM exits, stranding the peer as "connected".
-                        synchronized (this.lifecycleMonitor) {
-                            if (!this.isRunning) {
-                                log.info("Connection established after stop(); closing it to avoid leaking the session.");
-                                closeQuietly(session);
-                                return;
+                // Create a separate header snapshot for every attempt, including retries. Never reuse
+                // a previously minted token or mutate headers retained by an in-flight handshake.
+                try {
+                    val headers = createHeaders();
+                    webSocketClient.execute(this.vcmpHandler, headers, this.uri)
+                        .thenAccept(session -> {
+                            // The handshake completes asynchronously, so stop() may already have run by
+                            // the time we get here. Decide what to do under the same lock stop() uses:
+                            // if we are no longer running, closeSession() has already executed (and found
+                            // webSocketSession still null, closing nothing), so we must close this
+                            // freshly-established session ourselves — otherwise it leaks and stays open
+                            // until the JVM exits, stranding the peer as "connected".
+                            synchronized (this.lifecycleMonitor) {
+                                if (!this.isRunning) {
+                                    log.info("Connection established after stop(); closing it to avoid leaking the session.");
+                                    closeQuietly(session);
+                                    return;
+                                }
+                                log.info("Connection established.");
+                                webSocketSession = session;
+                                connectionError = null;
                             }
-                            log.info("Connection established.");
-                            webSocketSession = session;
-                            connectionError = null;
-                        }
-                    })
-                    .exceptionally(ex -> {
-                        // Repeated connect failures are logged as warnings without a stack trace.
-                        if (connectionError == null) {
-                            log.error("Failed to connect", ex);
-                        }
-                        else {
-                            log.warn("Failed to connect");
-                        }
-                        connectionError = ex;
-                        scheduleReconnect(false);
-                        return null;
-                    });
+                        })
+                        .exceptionally(ex -> {
+                            connectionFailed(ex);
+                            return null;
+                        });
+                }
+                catch (InvocationTargetException | IllegalAccessException | RuntimeException ex) {
+                    // A credential provider failure must not send stale/anonymous credentials or
+                    // prevent future reconnect attempts (for example after its dependency recovers).
+                    connectionFailed(ex);
+                }
             }
         }
+    }
+
+    private void connectionFailed(Throwable failure) {
+        if (connectionError == null) {
+            log.error("Failed to connect", failure);
+        }
+        else {
+            log.warn("Failed to connect");
+        }
+        connectionError = failure;
+        scheduleReconnect(false);
     }
 
     private void closeSession() throws IOException {
