@@ -7,8 +7,10 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 import org.springframework.http.HttpStatus;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.socket.*;
 
 import java.io.IOException;
@@ -18,7 +20,9 @@ import java.lang.reflect.Parameter;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.stream.Stream;
 
@@ -205,8 +209,11 @@ public final class VcmpHandler implements WebSocketHandler {
             else if (completableFuture != null) {
                 completableFuture.thenAccept(result -> ack(session, messageId, result))
                         .exceptionally(error -> {
-                            log.info("Handler failed with exception. Sending NAK.", error);
-                            nak(session, messageId, createProblemDetail(error));
+                            // A dependent stage sees the failure wrapped in a CompletionException;
+                            // map the listener's own exception, or a deliberate 4xx arrives as a 500.
+                            val cause = unwrap(error);
+                            log.info("Handler failed with exception. Sending NAK.", cause);
+                            nak(session, messageId, createProblemDetail(cause));
                             return null;
                         });
             }
@@ -315,12 +322,40 @@ public final class VcmpHandler implements WebSocketHandler {
     }
 
     static ProblemDetail createProblemDetail(Throwable throwable) {
-        if (throwable instanceof ErrorResponseException errorResponseException) {
-            return errorResponseException.getBody();
+        val deliberateStatus = resolveDeliberateStatus(throwable);
+        if (deliberateStatus != null) {
+            return deliberateStatus;
         }
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
         return problemDetail;
+    }
+
+    /**
+     * The status a listener chose deliberately, or null for an unclassified failure: an
+     * {@link ErrorResponseException} carries its ProblemDetail, an exception class annotated with
+     * {@link ResponseStatus} (looked up with meta-annotation and inheritance semantics, as Spring
+     * MVC does) maps to that code with the annotation's reason or the exception's message.
+     */
+    private static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
+        if (throwable instanceof ErrorResponseException errorResponseException) {
+            return errorResponseException.getBody();
+        }
+        val responseStatus = AnnotatedElementUtils.findMergedAnnotation(throwable.getClass(), ResponseStatus.class);
+        if (responseStatus != null) {
+            val detail = hasText(responseStatus.reason()) ? responseStatus.reason() : throwable.getMessage();
+            return ProblemDetail.forStatusAndDetail(responseStatus.code(), detail);
+        }
+        return null;
+    }
+
+    /** Strips the future-machinery wrappers so the listener's own exception is what gets mapped. */
+    static Throwable unwrap(Throwable error) {
+        while ((error instanceof CompletionException || error instanceof ExecutionException)
+                && error.getCause() != null) {
+            error = error.getCause();
+        }
+        return error;
     }
 
     ProblemDetail parseProblemDetail(String payload) {
