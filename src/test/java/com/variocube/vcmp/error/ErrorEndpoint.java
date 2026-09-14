@@ -21,7 +21,18 @@ public class ErrorEndpoint {
      */
     @VcmpListener
     public CompletableFuture<Void> failAsync(AsyncTestMessage message) {
-        return CompletableFuture.failedFuture(new ResponseStatusException(HttpStatus.BAD_REQUEST, "This is bad, asynchronously"));
+        return CompletableFuture.failedFuture(
+                new ResponseStatusException(HttpStatus.BAD_REQUEST, "This is bad, asynchronously"));
+    }
+
+    /**
+     * The sync shape of the same wrapper: a listener that joins a failed future throws the
+     * CompletionException itself, on the invoking thread.
+     */
+    @VcmpListener
+    public void joinFailedFuture(JoinedFutureTestMessage message) {
+        CompletableFuture.failedFuture(new ResponseStatusException(HttpStatus.BAD_REQUEST, "This is bad, joined"))
+                .join();
     }
 
     @VcmpListener
@@ -32,5 +43,10 @@ public class ErrorEndpoint {
     @VcmpListener
     public CompletableFuture<Void> failAnnotatedAsync(AnnotatedAsyncTestMessage message) {
         return CompletableFuture.failedFuture(new AnnotatedNotFoundException("Nothing here either"));
+    }
+
+    @VcmpListener
+    public void crash(CrashTestMessage message) {
+        throw new IllegalStateException("Nobody meant this");
     }
 }

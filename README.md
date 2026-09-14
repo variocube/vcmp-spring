@@ -29,6 +29,14 @@ additionally failed with a NAK when the message can never be acknowledged:
 | The session closed while the ACK was still outstanding | `503` | `Session closed` |
 | Sending without a session (`BasicVcmpClient.send` while disconnected, `VcmpSessionPool.send` to a recipient with no connected session) | `503` | `Not connected` |
 
+"The peer's own status" is the status the listener chose: an `ErrorResponseException` (such as
+`ResponseStatusException`) is forwarded as its `ProblemDetail`; an exception whose class is annotated
+`@ResponseStatus` maps to that code, with the annotation's reason or the exception's message as
+detail. This holds for a listener returning a `CompletableFuture` too: the future's failure is
+unwrapped before it is mapped. Any other exception NAKs as `500` / `Message handling failed` with the
+exception's message as detail, so a `500` from the peer means "the listener crashed", never "the
+listener rejected the message".
+
 A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
 settlement to its handlers.
