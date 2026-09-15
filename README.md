@@ -34,8 +34,8 @@ additionally failed with a NAK when the message can never be acknowledged:
 `@ResponseStatus` maps to that code, with the annotation's reason or the exception's message as
 detail. This holds for a listener returning a `CompletableFuture` too: the future's failure is
 unwrapped before it is mapped. Any other exception NAKs as `500` / `Message handling failed` with the
-exception's message as detail, so a `500` from the peer means "the listener crashed", never "the
-listener rejected the message".
+exception's message as detail. Deliberate statuses are preserved, including `500`, so the status
+alone does not distinguish a listener crash from a deliberate rejection.
 
 A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
