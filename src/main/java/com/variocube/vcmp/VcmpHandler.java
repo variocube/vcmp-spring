@@ -6,9 +6,11 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.socket.*;
 
 import java.io.IOException;
@@ -18,7 +20,9 @@ import java.lang.reflect.Parameter;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.stream.Stream;
 
@@ -205,8 +209,7 @@ public final class VcmpHandler implements WebSocketHandler {
             else if (completableFuture != null) {
                 completableFuture.thenAccept(result -> ack(session, messageId, result))
                         .exceptionally(error -> {
-                            log.info("Handler failed with exception. Sending NAK.", error);
-                            nak(session, messageId, createProblemDetail(error));
+                            nakFailure(session, messageId, error);
                             return null;
                         });
             }
@@ -216,12 +219,32 @@ public final class VcmpHandler implements WebSocketHandler {
             }
         }
         catch (InvocationTargetException ex) {
-            log.error("Error invoking listener", ex);
-            nak(session, messageId, createProblemDetail(ex.getCause()));
+            nakFailure(session, messageId, ex.getCause());
         }
         catch (Exception ex) {
-            log.error("Error invoking listener", ex);
-            nak(session, messageId, createProblemDetail(ex));
+            nakFailure(session, messageId, ex);
+        }
+    }
+
+    /**
+     * NAKs a message whose handling failed. A failure the listener chose deliberately (see
+     * {@link #resolveDeliberateStatus}) is a rejection, not an incident: one log line, no stack
+     * trace, so a deliberate 404 does not read like a crash in this side's log either. Anything
+     * else is logged as the error it is, stack trace included.
+     */
+    private void nakFailure(VcmpSession session, String messageId, Throwable error) {
+        // A dependent stage sees an async failure wrapped in a CompletionException, and a sync
+        // listener joining a failed future throws one; map the listener's own exception either way.
+        val cause = unwrap(error);
+        val deliberate = resolveDeliberateStatus(cause);
+        if (deliberate != null) {
+            log.info("Listener rejected message {} with status {}: {}", messageId, deliberate.getStatus(),
+                    deliberate.getDetail());
+            nak(session, messageId, deliberate);
+        }
+        else {
+            log.error("Handling message {} failed. Sending NAK.", messageId, cause);
+            nak(session, messageId, unclassifiedProblemDetail(cause));
         }
     }
 
@@ -315,12 +338,47 @@ public final class VcmpHandler implements WebSocketHandler {
     }
 
     static ProblemDetail createProblemDetail(Throwable throwable) {
-        if (throwable instanceof ErrorResponseException errorResponseException) {
-            return errorResponseException.getBody();
-        }
+        val deliberate = resolveDeliberateStatus(throwable);
+        return deliberate != null ? deliberate : unclassifiedProblemDetail(throwable);
+    }
+
+    private static ProblemDetail unclassifiedProblemDetail(Throwable throwable) {
         val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, throwable.getMessage());
         problemDetail.setTitle("Message handling failed");
         return problemDetail;
+    }
+
+    /**
+     * The status a listener chose deliberately, or null for an unclassified failure: an
+     * {@link ErrorResponseException} carries its ProblemDetail; an exception whose class is annotated
+     * with {@link ResponseStatus} (found through meta-annotations and superclasses) maps to that code,
+     * with the annotation's reason or the exception's message as detail. Only the exception itself is
+     * examined: unlike Spring MVC's resolver, its causes are not searched, so an annotated exception
+     * buried in a generic wrapper cannot hijack the status. The future wrappers are stripped by
+     * {@link #unwrap} beforehand.
+     */
+    private static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
+        if (throwable instanceof ErrorResponseException errorResponseException) {
+            return errorResponseException.getBody();
+        }
+        val responseStatus = AnnotatedElementUtils.findMergedAnnotation(throwable.getClass(), ResponseStatus.class);
+        if (responseStatus != null) {
+            val detail = hasText(responseStatus.reason()) ? responseStatus.reason() : throwable.getMessage();
+            return ProblemDetail.forStatusAndDetail(responseStatus.code(), detail);
+        }
+        return null;
+    }
+
+    /**
+     * Strips the future-machinery wrappers (an async completion, or a sync {@code join()}) so the
+     * listener's own exception is what gets mapped.
+     */
+    static Throwable unwrap(Throwable error) {
+        while ((error instanceof CompletionException || error instanceof ExecutionException)
+                && error.getCause() != null) {
+            error = error.getCause();
+        }
+        return error;
     }
 
     ProblemDetail parseProblemDetail(String payload) {
