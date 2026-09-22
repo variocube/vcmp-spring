@@ -1,4 +1,8 @@
 package com.variocube.vcmp.client;
+import org.springframework.http.HttpHeaders;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import lombok.val;
 import org.junit.jupiter.api.Test;
@@ -8,9 +12,11 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
 import java.net.URI;
+import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -65,6 +71,73 @@ class VcmpConnectionManagerTest {
         verify(session, never()).close();
 
         manager.stop();
+    }
+
+    @Test
+    void refreshesHeadersAfterARejectedHandshake() throws Exception {
+        val target = new HeadersTarget();
+        val manager = new VcmpConnectionManager(target, "ws://localhost/test");
+        val requests = new CopyOnWriteArrayList<WebSocketHttpHeaders>();
+        val client = mock(StandardWebSocketClient.class);
+        val session = mock(WebSocketSession.class);
+        when(client.execute(any(WebSocketHandler.class), any(WebSocketHttpHeaders.class), any(URI.class)))
+                .thenAnswer(invocation -> {
+                    requests.add(invocation.getArgument(1));
+                    return requests.size() == 1 ? CompletableFuture.failedFuture(new IOException("Rejected"))
+                            : CompletableFuture.completedFuture(session);
+                });
+        setField(manager, "webSocketClient", client);
+        manager.setReconnectTimeoutMin(Duration.ZERO);
+        manager.setReconnectTimeoutMax(Duration.ofMillis(1));
+        assertThat(target.calls.get()).isZero();
+        try {
+            manager.start();
+            await().untilAsserted(() -> assertThat(requests).hasSize(2));
+            assertThat(requests.get(0).getFirst("Authorization")).isEqualTo("Bearer token-1");
+            assertThat(requests.get(1).getFirst("Authorization")).isEqualTo("Bearer token-2");
+            assertThat(requests.get(0).getFirst("X-First-Only")).isEqualTo("yes");
+            assertThat(requests.get(1).getFirst("X-First-Only")).isNull();
+        } finally {
+            manager.stop();
+        }
+    }
+
+    @Test
+    void retriesHeaderFailuresWithoutSendingAnUnauthenticatedHandshake() throws Exception {
+        val target = new HeadersTarget();
+        target.failFirst = true;
+        val manager = new VcmpConnectionManager(target, "ws://localhost/test");
+        val requests = new CopyOnWriteArrayList<WebSocketHttpHeaders>();
+        val client = mock(StandardWebSocketClient.class);
+        when(client.execute(any(WebSocketHandler.class), any(WebSocketHttpHeaders.class), any(URI.class)))
+                .thenAnswer(invocation -> {
+                    requests.add(invocation.getArgument(1));
+                    return CompletableFuture.completedFuture(mock(WebSocketSession.class));
+                });
+        setField(manager, "webSocketClient", client);
+        manager.setReconnectTimeoutMin(Duration.ZERO);
+        manager.setReconnectTimeoutMax(Duration.ofMillis(1));
+        try {
+            manager.start();
+            await().untilAsserted(() -> assertThat(requests).hasSize(1));
+            assertThat(target.calls.get()).isEqualTo(2);
+            assertThat(requests.get(0).getFirst("Authorization")).isEqualTo("Bearer token-2");
+        } finally {
+            manager.stop();
+        }
+    }
+
+    public static class HeadersTarget {
+        final AtomicInteger calls = new AtomicInteger();
+        boolean failFirst;
+
+        @VcmpHttpHeaders
+        public void headers(HttpHeaders headers) {
+            int attempt = calls.incrementAndGet();
+            if (failFirst && attempt == 1) throw new IllegalStateException("Credential provider unavailable");
+            headers.setBearerAuth("token-" + attempt);
+            if (attempt == 1) headers.set("X-First-Only", "yes");
+        }
     }
 
     private static void injectClient(VcmpConnectionManager manager, CompletableFuture<WebSocketSession> handshake)

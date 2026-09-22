@@ -31,6 +31,14 @@ additionally failed with a NAK when the message can never be acknowledged:
 | Transient failure while sending on an open session (e.g. the send-lock timeout under contention) | `500` | `Send failed` |
 | The outbound message could not be serialized (deterministic — retrying cannot help) | `500` | `Message handling failed` |
 
+"The peer's own status" is the status the listener chose: an `ErrorResponseException` (such as
+`ResponseStatusException`) is forwarded as its `ProblemDetail`; an exception whose class is annotated
+`@ResponseStatus` maps to that code, with the annotation's reason or the exception's message as
+detail. This holds for a listener returning a `CompletableFuture` too: the future's failure is
+unwrapped before it is mapped. Any other exception NAKs as `500` / `Message handling failed` with the
+exception's message as detail. Deliberate statuses are preserved, including `500`, so the status
+alone does not distinguish a listener crash from a deliberate rejection.
+
 A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`any`) whose members
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
 settlement to its handlers.
@@ -87,3 +95,14 @@ application startup (the web server port opens before startup has finished):
 |----------|---------|---------|
 | `vcmp.server.ready-gate.enabled` | `true` | Reject websocket handshakes with `503` + `Retry-After` until `ApplicationReadyEvent`. The filter runs at highest precedence, before Spring Security. Clients reconnect with retry. |
 | `vcmp.server.connect-concurrency` | `8` | Bound on concurrently running `@VcmpSessionConnected` handlers, shared across all endpoints of the application. Queues connect storms instead of exhausting resources (e.g. the DB pool). `<= 0` disables throttling. |
+
+## Refreshing client authentication
+
+`@VcmpHttpHeaders` runs immediately before **every** handshake, including automatic reconnects,
+with a fresh `HttpHeaders` instance. Mint short-lived Bearer tokens inside this hook rather than
+at bean construction. Do not retain the supplied headers or mutate them asynchronously.
+
+If the hook fails, VCMP skips the handshake and follows the normal reconnect policy. It never
+reuses headers from a previous attempt or sends an anonymous handshake after a refresh failure.
+Existing static-header hooks remain compatible, but now run once per attempt instead of once
+when the connection manager is constructed. Keep hook work brief.
