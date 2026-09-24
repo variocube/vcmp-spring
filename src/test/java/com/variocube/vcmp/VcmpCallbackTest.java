@@ -85,6 +85,43 @@ class VcmpCallbackTest {
     }
 
     @Test
+    void failedWithoutProblemDetailIsNotAConnectionProblem() {
+        // a generic failure factory used by consumer code, not a transport condition
+        val nak = new AtomicReference<ProblemDetail>();
+        VcmpCallback.failed().peekNak(nak::set);
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isFalse();
+    }
+
+    @Test
+    void failedWithCallerSuppliedProblemDetailStaysUnmarked() {
+        val nak = new AtomicReference<ProblemDetail>();
+        VcmpCallback.failed(ProblemDetail.forStatus(HttpStatus.CONFLICT)).peekNak(nak::set);
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isFalse();
+    }
+
+    @Test
+    void parsedProblemDetailAckResultCannotCarryAForgedMarker() {
+        val callback = new VcmpCallback<>(ProblemDetail.class);
+        val result = new AtomicReference<ProblemDetail>();
+        callback.peekAck(result::set);
+
+        // a raw ACK payload from a peer claiming its result ProblemDetail is a local problem
+        callback.notifyAckRaw("""
+          {
+            "status": 503,
+            "title": "Session closed",
+            "properties": {
+              "%s": true,
+              "other": "survives"
+            }
+          }""".formatted(LocalConnectionProblem.PROPERTY));
+
+        assertThat(result.get()).isNotNull();
+        assertThat(LocalConnectionProblem.isMarked(result.get())).isFalse();
+        assertThat(result.get().getProperties()).containsEntry("other", "survives");
+    }
+
+    @Test
     void canAwaitFailedProblemDetail() {
         val exception = catchThrowableOfType(() -> VcmpCallback.failed(ProblemDetail.forStatus(HttpStatus.CONFLICT)).await(), ErrorResponseException.class);
         assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -109,6 +146,7 @@ class VcmpCallbackTest {
         assertThat(nak.get()).isNotNull();
         assertThat(nak.get().getStatus()).isEqualTo(503);
         assertThat(nak.get().getTitle()).isEqualTo("Not connected");
+        assertThat(LocalConnectionProblem.isMarked(nak.get())).isTrue();
     }
 
     @Test
