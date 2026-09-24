@@ -8,14 +8,20 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.variocube.vcmp.ObjectMapperHolder.createObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
@@ -149,4 +155,58 @@ class VcmpHandlerTest {
         assertThat(problemDetail.getStatus()).isEqualTo(503);
         assertThat(problemDetail.getProperties()).containsEntry("other", "survives");
     }
+
+	@Test
+	void jsonNullProblemDetailUsesFallback() {
+		val handler = new VcmpHandler(new Object());
+
+		val problemDetail = handler.parseProblemDetail("null");
+
+		assertThat(problemDetail).isNotNull();
+		assertThat(problemDetail.getStatus()).isEqualTo(500);
+		assertThat(problemDetail.getDetail()).isEqualTo("Message handling failed.");
+		assertThat(LocalConnectionProblem.isMarked(problemDetail)).isFalse();
+	}
+
+	static class ConnectedSessionTarget {
+		final CompletableFuture<VcmpSession> session = new CompletableFuture<>();
+
+		@VcmpSessionConnected
+		public void connected(VcmpSession session) {
+			this.session.complete(session);
+		}
+	}
+
+	@Test
+	void jsonNullNakRunsHandlerAndFailsRelayedFuture() throws Exception {
+		val target = new ConnectedSessionTarget();
+		val handler = new VcmpHandler(target);
+		val webSocketSession = mock(WebSocketSession.class);
+		when(webSocketSession.getId()).thenReturn("null-nak-test");
+		when(webSocketSession.isOpen()).thenReturn(true);
+		when(webSocketSession.getTextMessageSizeLimit()).thenReturn(8192);
+		handler.afterConnectionEstablished(webSocketSession);
+		val session = target.session.get(5, TimeUnit.SECONDS);
+
+		val nakCalled = new AtomicBoolean();
+		val result = session.send(new BoxSnapshot(List.of()))
+				.peekNak(() -> nakCalled.set(true))
+				.toCompletableFuture();
+		val captor = ArgumentCaptor.forClass(TextMessage.class);
+		verify(webSocketSession).sendMessage(captor.capture());
+		val messageId = VcmpFrame.parse(captor.getValue().getPayload()).getId();
+
+		handler.handleMessage(webSocketSession,
+				new TextMessage(VcmpFrame.createNak(messageId, "null").serialize()));
+
+		await().atMost(5, TimeUnit.SECONDS).until(result::isDone);
+		assertThat(nakCalled).isTrue();
+		assertThatThrownBy(result::join)
+				.isInstanceOf(CompletionException.class)
+				.cause().isInstanceOfSatisfying(ErrorResponseException.class, error -> {
+					assertThat(error.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+					assertThat(error.getBody().getDetail()).isEqualTo("Message handling failed.");
+					assertThat(LocalConnectionProblem.isTransportFailure(error)).isFalse();
+				});
+	}
 }

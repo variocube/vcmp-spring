@@ -398,7 +398,9 @@ public final class VcmpHandler implements WebSocketHandler {
             return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Message handling failed.");
         }
         try {
-            val problemDetail = objectMapper.readValue(payload, ProblemDetail.class);
+			val problemDetail = Optional.ofNullable(objectMapper.readValue(payload, ProblemDetail.class))
+					.orElseGet(() -> ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
+							"Message handling failed."));
             // Never trust a peer-sent marker: a ProblemDetail that crossed the wire is by definition
             // not local, and an older or misbehaving peer must not be able to forge it.
             LocalConnectionProblem.unmark(problemDetail);
