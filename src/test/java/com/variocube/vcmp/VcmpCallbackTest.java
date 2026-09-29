@@ -7,8 +7,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
 
+import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -321,5 +324,75 @@ class VcmpCallbackTest {
         original.notifyNak(ProblemDetail.forStatus(HttpStatus.CONFLICT));
         assertThat(sideEffectFired.get()).isTrue();
         assertThat(frameworkReceived.get().getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    /**
+     * ACKs are dispatched on the worker pool, so the callbacks combined by all() settle concurrently —
+     * e.g. one command sent to several sessions. Every concurrent ACK must count, or the combined
+     * callback stays pending and its awaiter times out (variocube/center#478).
+     */
+    @Test
+    void allAcksWhenCallbacksSettleConcurrently() throws Exception {
+        val pool = Executors.newFixedThreadPool(8);
+        try {
+            for (int round = 0; round < 2_000; round++) {
+                val callbacks = new ArrayList<VcmpCallback<Integer>>();
+                for (int i = 0; i < 8; i++) {
+                    callbacks.add(new VcmpCallback<>());
+                }
+                val combined = VcmpCallback.all(callbacks);
+                val start = new CountDownLatch(1);
+                for (int i = 0; i < callbacks.size(); i++) {
+                    val callback = callbacks.get(i);
+                    val value = i;
+                    pool.submit(() -> {
+                        start.await();
+                        callback.notifyAck(value);
+                        return null;
+                    });
+                }
+                start.countDown();
+                assertThat(combined.await(5, TimeUnit.SECONDS))
+                        .as("round %d", round)
+                        .containsExactlyInAnyOrder(0, 1, 2, 3, 4, 5, 6, 7);
+            }
+        }
+        finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * An ACK can arrive on a worker thread while the sender is still attaching its handler — a reply
+     * that races the listener returning its callback. The handler must fire exactly once either way.
+     */
+    @Test
+    void handlerRegisteredConcurrentlyWithSettlementFiresExactlyOnce() throws Exception {
+        val pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 20_000; round++) {
+                val callback = new VcmpCallback<Integer>();
+                val fired = new AtomicInteger();
+                val value = round;
+                val start = new CountDownLatch(1);
+                val register = pool.submit(() -> {
+                    start.await();
+                    callback.onAck(result -> fired.incrementAndGet());
+                    return null;
+                });
+                val settle = pool.submit(() -> {
+                    start.await();
+                    callback.notifyAck(value);
+                    return null;
+                });
+                start.countDown();
+                register.get(5, TimeUnit.SECONDS);
+                settle.get(5, TimeUnit.SECONDS);
+                assertThat(fired).as("round %d", round).hasValue(1);
+            }
+        }
+        finally {
+            pool.shutdownNow();
+        }
     }
 }
