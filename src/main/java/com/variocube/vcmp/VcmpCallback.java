@@ -53,16 +53,18 @@ public class VcmpCallback<T> {
     }
 
     VcmpCallback<T> onAck(Consumer<T> ack) {
-        // set the ACK handler only if execution is pending
-        if (state == State.PENDING) {
-            if (this.ack != null) {
-                throw new IllegalStateException("Only one onAck handler is supported.");
+        // Registering and settling are mutually exclusive, so a concurrent ACK either finds the
+        // handler registered or is seen here: the handler fires exactly once either way.
+        synchronized (this) {
+            if (state == State.PENDING) {
+                if (this.ack != null) {
+                    throw new IllegalStateException("Only one onAck handler is supported.");
+                }
+                this.ack = ack;
+                return this;
             }
-            this.ack = ack;
         }
-        // Execute the handler directly if the execution completed
-        // Keep this as separate `if` to avoid race condition if `notifyAck` was called
-        // during execution of the code above
+        // Already settled: execute the handler directly if the execution completed.
         if (state == State.COMPLETED) {
             ack.accept(this.result);
         }
@@ -74,16 +76,17 @@ public class VcmpCallback<T> {
     }
 
     VcmpCallback<T> onNak(Consumer<ProblemDetail> nak) {
-        // set the NAK handler only if execution is pending
-        if (state == State.PENDING) {
-            if (this.nak != null) {
-                throw new IllegalStateException("Only one onNak handler is supported.");
+        // See onAck: registering and settling are mutually exclusive.
+        synchronized (this) {
+            if (state == State.PENDING) {
+                if (this.nak != null) {
+                    throw new IllegalStateException("Only one onNak handler is supported.");
+                }
+                this.nak = nak;
+                return this;
             }
-            this.nak = nak;
         }
-        // Execute the handler directly if the execution failed
-        // Keep this as separate `if` to avoid race condition if `notifyNak` was called
-        // during execution of the code above
+        // Already settled: execute the handler directly if the execution failed.
         if (state == State.FAILED) {
             nak.accept(this.problemDetail);
         }
@@ -91,6 +94,7 @@ public class VcmpCallback<T> {
     }
 
     void notifyAck(T result) {
+        Consumer<T> ack;
         // Settle at most once: e.g. a combined callback from all()/any() receives one NAK
         // per closing session, but must fire its handlers (and any chained NAK frame) for
         // the first settlement only.
@@ -101,10 +105,12 @@ public class VcmpCallback<T> {
             }
             this.result = result;
             this.state = State.COMPLETED;
+            ack = this.ack;
         }
-        if (this.ack != null) {
+        // Invoke outside the lock: handlers may settle further callbacks or send frames.
+        if (ack != null) {
             log.debug("Invoking ACK handler.");
-            this.ack.accept(result);
+            ack.accept(result);
         }
     }
 
@@ -113,6 +119,7 @@ public class VcmpCallback<T> {
     }
 
     void notifyNak(ProblemDetail problemDetail) {
+        Consumer<ProblemDetail> nak;
         synchronized (this) {
             if (this.state != State.PENDING) {
                 log.debug("Ignoring NAK: callback is already settled.");
@@ -120,10 +127,11 @@ public class VcmpCallback<T> {
             }
             this.problemDetail = problemDetail;
             this.state = State.FAILED;
+            nak = this.nak;
         }
-        if (this.nak != null) {
+        if (nak != null) {
             log.debug("Invoking NAK handler.");
-            this.nak.accept(problemDetail);
+            nak.accept(problemDetail);
         }
     }
 
@@ -290,9 +298,15 @@ public class VcmpCallback<T> {
             return combined;
         }
         for (val callback : callbacks) {
+            // ACKs arrive concurrently on the worker pool; count them under a lock, or two
+            // simultaneous ACKs can both miss the final size and leave the combined callback pending.
             callback.onAck(result -> {
-                results.add(result);
-                if (results.size() == callbacks.size()) {
+                boolean complete;
+                synchronized (results) {
+                    results.add(result);
+                    complete = results.size() == callbacks.size();
+                }
+                if (complete) {
                     combined.notifyAck(results);
                 }
             });

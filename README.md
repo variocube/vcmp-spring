@@ -43,6 +43,10 @@ A callback settles **at most once**: a combined callback (`VcmpCallback.all`/`an
 fail one after another — e.g. a broadcast during a rolling restart — delivers only the first
 settlement to its handlers.
 
+Callbacks are thread-safe. ACKs and NAKs are dispatched on the worker pool, so the members of an
+`all`/`any` may settle concurrently, and a callback may settle while its handler is being attached. Every
+member's ACK counts, and each handler fires exactly once.
+
 All `503` cases mirror what the JavaScript implementation reports for the same conditions
 (variocube/vcmp-js#32), so a `503` can be treated uniformly as a retryable transport condition.
 Note that a `503` does not imply the peer never processed the message — an ACK lost to a connection
