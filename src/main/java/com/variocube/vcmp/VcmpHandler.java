@@ -1,6 +1,8 @@
 package com.variocube.vcmp;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.jsontype.NamedType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
 import lombok.Setter;
@@ -32,7 +34,15 @@ import static org.springframework.util.StringUtils.hasText;
 @Slf4j
 public final class VcmpHandler implements WebSocketHandler {
 
+    /** Writes every outgoing payload. Knows the primary type ids only, see {@link #messageReader}. */
     private final ObjectMapper objectMapper;
+
+    /**
+     * Reads incoming messages. A copy of {@link #objectMapper} that also knows the listeners' aliases. Jackson
+     * writes the id of the <em>first</em> named type it finds for a class, so aliases registered on the writing
+     * mapper could make outgoing frames carry an alias instead of the primary id.
+     */
+    private final ObjectMapper messageReader;
 
     private final Object target;
     private final HashMap<Class<?>, Method> listeners;
@@ -60,6 +70,8 @@ public final class VcmpHandler implements WebSocketHandler {
 
         this.listeners = findListeners(target);
         this.listeners.keySet().forEach(objectMapper::registerSubtypes);
+        this.messageReader = objectMapper.copy();
+        registerAliases(this.listeners, messageReader);
     }
 
     @Override
@@ -189,7 +201,7 @@ public final class VcmpHandler implements WebSocketHandler {
             if (log.isTraceEnabled()) {
                 log.trace("Handling message: {}", messageId);
             }
-            VcmpMessage message = objectMapper.readValue(messagePayload, VcmpMessage.class);
+            VcmpMessage message = messageReader.readValue(messagePayload, VcmpMessage.class);
             Object returnValue = invokeListener(session, message);
 
             VcmpCallback<?> callback = Optional.ofNullable(returnValue)
@@ -314,6 +326,43 @@ public final class VcmpHandler implements WebSocketHandler {
         return true;
     }
 
+    /**
+     * Registers each listener's aliases as additional type ids of its message class. Fails with an
+     * {@link IllegalStateException} on a blank alias or an id used twice (by two classes, or as alias and
+     * primary id): two classes for one id would silently route frames to the wrong listener.
+     */
+    private static void registerAliases(HashMap<Class<?>, Method> listeners, ObjectMapper mapper) {
+        val idOwners = new HashMap<String, Class<?>>();
+        listeners.keySet().forEach(type -> idOwners.put(primaryTypeId(type), type));
+        listeners.forEach((type, method) -> {
+            for (String alias : method.getAnnotation(VcmpListener.class).aliases()) {
+                if (!hasText(alias)) {
+                    throw new IllegalStateException("Blank alias on @VcmpListener " + method.getName());
+                }
+                val owner = idOwners.putIfAbsent(alias, type);
+                if (owner != null) {
+                    throw new IllegalStateException("Alias `" + alias + "` of @VcmpListener " + method.getName()
+                            + " is already the type id or alias of " + owner.getSimpleName());
+                }
+                mapper.registerSubtypes(new NamedType(type, alias));
+            }
+            // Jackson keeps only the names registered explicitly once a class has one, so the primary id has to
+            // be registered by name too.
+            if (method.getAnnotation(VcmpListener.class).aliases().length > 0) {
+                mapper.registerSubtypes(new NamedType(type, primaryTypeId(type)));
+            }
+        });
+    }
+
+    /** The type id Jackson uses for the class: its {@code @JsonTypeName}, else the unqualified class name. */
+    private static String primaryTypeId(Class<?> type) {
+        val typeName = type.getAnnotation(JsonTypeName.class);
+        if (typeName != null && !typeName.value().isEmpty()) {
+            return typeName.value();
+        }
+        return type.getName().substring(type.getName().lastIndexOf('.') + 1);
+    }
+
     private static HashMap<Class<?>, Method> findListeners(Object target) {
         Class<?> targetClass = ClassUtils.getTargetClass(target);
         log.info("Detecting listeners on {}", targetClass.getSimpleName());
@@ -326,7 +375,10 @@ public final class VcmpHandler implements WebSocketHandler {
                         .map(Parameter::getType);
 
                 if (messageType.isPresent()) {
-                    log.info(" - `{}` handled by `{}`", messageType.get().getSimpleName(), method.getName());
+                    val aliases = method.getAnnotation(VcmpListener.class).aliases();
+                    log.info(" - `{}`{} handled by `{}`", messageType.get().getSimpleName(),
+                            aliases.length > 0 ? " (also `" + String.join("`, `", aliases) + "`)" : "",
+                            method.getName());
                     listeners.put(messageType.get(), method);
                 }
                 else {

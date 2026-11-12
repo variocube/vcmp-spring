@@ -17,6 +17,22 @@ In order to test locally, you can publish a version to your local maven reposito
 ./gradlew -Pversion=0.0.0 publishToMavenLocal
 ```
 
+## Type aliases
+
+A listener normally handles the one `@type` id of its message class (`@JsonTypeName`, else the unqualified class name).
+When a peer sends a different id for the same message, name it as an alias instead of duplicating the class
+(center#537: controller-rs sends `cube:CubeUtilization`, the Java controller `CubeUtilization`):
+
+```java
+@VcmpListener(aliases = "cube:CubeUtilization")
+public void handleCubeUtilization(CubeUtilization utilization) { ... }
+```
+
+Incoming frames with the class's own id or any alias deserialize to the same class and reach the same listener.
+**Outgoing frames always use the class's own id.** An alias that is blank, equal to the listener's own id,
+repeated within one listener, or already the type id or alias of another listener of the same endpoint fails the
+endpoint's construction.
+
 ## Callback semantics
 
 `VcmpSession.send(...)` returns a `VcmpCallback` that is completed by the peer's ACK or NAK. It is
