@@ -32,6 +32,9 @@ public class HandshakeEndpoint {
         if (token.startsWith("bad")) {
             throw new IllegalArgumentException("Invalid token");
         }
+        if (token.equals("error")) {
+            throw new AssertionError("Authenticator bug");
+        }
         return VcmpAuthentication.of(new UserPrincipal(token));
     }
 

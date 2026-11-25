@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
  *     <li>{@code refresh-nak-once}: ACKs every AUT with {@code expiresIn}, except the second, which is NAKed with
  *     401.</li>
  * </ul>
+ * {@code nak} and {@code refresh-nak} NAK with {@code status} (default 401); {@code nak} with {@code keep} doesn't close.
  * With {@code malformed=array|negative|fraction|string}, an {@code ack} answers with such a malformed payload.
  * <ul>
  * </ul>
@@ -104,6 +105,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
         var query = UriComponentsBuilder.fromUri(session.getUri()).build().getQueryParams();
         String mode = session.getUri().getPath().substring("/fake/".length());
         String expiresIn = query.getFirst("expiresIn");
+        String nakStatus = query.getFirst("status") != null ? query.getFirst("status") : "401";
         long delay = query.getFirst("delay") != null ? Long.parseLong(query.getFirst("delay")) : 0;
         boolean first = !firstAckAt.containsKey(session.getId());
 
@@ -125,8 +127,10 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                         });
                     }
                     case "nak" -> {
-                        send(session, "NAK" + id + "{\"status\":401,\"title\":\"Authentication failed\"}");
-                        close(session);
+                        send(session, "NAK" + id + "{\"status\":" + nakStatus + ",\"title\":\"Authentication failed\"}");
+                        if (query.getFirst("keep") == null) {
+                            close(session);
+                        }
                     }
                     case "refresh-nak", "refresh-silent" -> {
                         if (first) {
@@ -139,7 +143,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                                     });
                         }
                         else if (mode.equals("refresh-nak")) {
-                            send(session, "NAK" + id + "{\"status\":401,\"title\":\"Authentication failed\"}");
+                            send(session, "NAK" + id + "{\"status\":" + nakStatus + ",\"title\":\"Authentication failed\"}");
                         }
                     }
                     case "refresh-nak-once" -> {

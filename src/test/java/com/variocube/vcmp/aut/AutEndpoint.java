@@ -64,6 +64,9 @@ public class AutEndpoint {
         if (token.equals("forbidden")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not allowed");
         }
+        if (token.equals("error")) {
+            throw new AssertionError("Authenticator bug");
+        }
         if (token.equals("crash")) {
             throw new IllegalStateException("Database down");
         }

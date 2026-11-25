@@ -222,6 +222,75 @@ class AutClientTest extends VcmpTestBase {
         assertThat(manager.getConnectionError()).isNull();
     }
 
+    /** A credential method that throws synchronously (before returning its CompletionStage). */
+    public static class SyncThrowingClient extends Client {
+        SyncThrowingClient() {
+            super(AutClientTest::token);
+        }
+
+        @Override
+        @VcmpCredential
+        public CompletionStage<Object> credential() {
+            if (credentialCalls.get() == 0) {
+                credentialCalls.incrementAndGet();
+                throw new IllegalStateException("Identity provider client not ready");
+            }
+            return super.credential();
+        }
+    }
+
+    @Test
+    void credentialMethodThrowingSynchronouslyIsAFailedSupplier() {
+        val client = new SyncThrowingClient();
+        manager = new VcmpConnectionManager(client, BASE_URL + "/fake/ack");
+        manager.setReconnectTimeoutMin(Duration.ZERO);
+        manager.setReconnectTimeoutMax(Duration.ofMillis(1));
+        manager.setDisconnectTimeout(Duration.ZERO);
+        manager.start();
+
+        await().until(client::isConnected);
+        assertThat(client.failures).hasSize(1).allMatch(problem -> problem.getStatus() == 401);
+        val firstSession = fake.sessions.get(0);
+        assertThat(fake.closeCodes.get(firstSession)).isEqualTo(4008);
+        assertThat(fake.closeReasons.get(firstSession)).isEqualTo("authentication failed");
+        assertThat(fake.framesOf("AUT")).hasSize(1)
+                .allMatch(frame -> frame.payload().equals("{\"token\":\"t2\"}"));
+    }
+
+    /** #34: a NAK 503 (server overloaded) is handled like any NAK. */
+    @Test
+    void nak503ToTheFirstAutClosesAndReconnects() {
+        val client = start(BASE_URL + "/fake/nak?status=503&keep=1", AutClientTest::token);
+        manager.start();
+
+        await().until(() -> fake.framesOf("AUT").size() >= 2);
+        assertThat(client.failures.get(0).getStatus()).isEqualTo(503);
+        val firstSession = fake.sessions.get(0);
+        assertThat(fake.closeCodes.get(firstSession)).isEqualTo(4008);
+        assertThat(fake.closeReasons.get(firstSession)).isEqualTo("authentication failed");
+        assertThat(fake.framesOf("AUT").get(1).session()).isNotEqualTo(firstSession);
+        assertThat(fake.framesOf("AUT").get(1).payload()).isEqualTo("{\"token\":\"t2\"}");
+        assertThat(client.connectedCalls.get()).isZero();
+    }
+
+    @Test
+    void nak503ToARefreshIsRetried() {
+        val client = start(BASE_URL + "/fake/refresh-nak?status=503&expiresIn=4000", AutClientTest::token);
+        manager.setAuthRefreshLeadTime(Duration.ofSeconds(2));
+        manager.setAuthRefreshRetryInterval(Duration.ofSeconds(1));
+        manager.start();
+
+        await().atMost(Duration.ofSeconds(8)).until(() -> fake.sessions.size() >= 2);
+        val firstSession = fake.sessions.get(0);
+        val refreshes = fake.framesOf("AUT").stream()
+                .filter(frame -> frame.session().equals(firstSession))
+                .skip(1)
+                .toList();
+        assertThat(refreshes).hasSize(2);
+        assertThat(client.failures).hasSize(2).allMatch(problem -> problem.getStatus() == 503);
+        assertThat(fake.closedByServerAt).containsKey(firstSession);
+    }
+
     /** The answer timeout starts when the credential is requested: a supplier that never completes ends like an
      * unanswered AUT. */
     @Test

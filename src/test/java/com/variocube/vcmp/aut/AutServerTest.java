@@ -84,6 +84,26 @@ class AutServerTest extends VcmpTestBase {
         }
     }
 
+    /** #34 "Synchronous failures": even an Error thrown by the authenticator is a NAK 500, never escaping. */
+    @Test
+    void authenticatorThrowingAnErrorIsNakked500AndClosed() {
+        assertFirstAutRejected("error", 500);
+        // The worker pool is still fine.
+        try (val client = new RawClient(URL)) {
+            client.aut("aut000000049", "quentin");
+            assertThat(client.next()).startsWith("ACKaut000000049");
+        }
+    }
+
+    @Test
+    void handshakeAuthenticatorThrowingAnErrorCloses() {
+        try (val client = new RawClient(BASE_URL + "/aut-handshake/error")) {
+            val close = client.awaitClose();
+            assertPolicyViolation(close);
+            assertThat(close.getReason()).isEqualTo("authentication failed");
+        }
+    }
+
     @Test
     void firstAutWithoutPrincipalIsNakked500AndClosed() {
         assertFirstAutRejected("nullprincipal", 500);
