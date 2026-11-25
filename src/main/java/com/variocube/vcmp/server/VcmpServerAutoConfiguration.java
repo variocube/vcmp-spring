@@ -4,6 +4,7 @@ import com.variocube.vcmp.ClassUtils;
 import com.variocube.vcmp.VcmpHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -15,6 +16,7 @@ import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 
@@ -46,8 +48,20 @@ public class VcmpServerAutoConfiguration implements WebSocketConfigurer {
                 log.info("Registering endpoint {} with {}", path, endpoint.getClass().getSimpleName());
                 VcmpHandler handler = new VcmpHandler(endpoint);
                 handler.setConnectThrottle(connectThrottle);
-                registry.addHandler(handler, path)
+                if (vcmpEndpoint.authenticated()) {
+                    log.info("Endpoint {} requires session authentication.", path);
+                    handler.requireAuthentication(Duration.ofMillis(vcmpEndpoint.authTimeoutMillis()));
+                }
+                else if (handler.declaresAuthenticator()) {
+                    // An authenticator on an endpoint without the opt-in would silently accept every session.
+                    throw new IllegalStateException(endpointClass.getSimpleName()
+                            + " declares an authenticator but is not @VcmpEndpoint(authenticated = true).");
+                }
+                val registration = registry.addHandler(handler, path)
                         .setAllowedOrigins("*");
+                if (handler.hasHandshakeAuthenticator()) {
+                    registration.addInterceptors(new PathVariablesHandshakeInterceptor());
+                }
             }
         }
     }

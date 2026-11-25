@@ -15,7 +15,9 @@ class VcmpFrame {
         ACK,
         NAK,
         MSG,
-        HBT
+        HBT,
+        /** Client → server: authenticate the session. The payload is a credential and is never logged. */
+        AUT
     }
 
     Type type;
@@ -67,6 +69,10 @@ class VcmpFrame {
         return new VcmpFrame(Type.MSG, generateId(), payload, null);
     }
 
+    static VcmpFrame createAuthenticate(String payload) {
+        return new VcmpFrame(Type.AUT, generateId(), payload, null);
+    }
+
     static VcmpFrame createHeartbeat(int heartbeatInterval) {
         return new VcmpFrame(Type.HBT, null, null, heartbeatInterval);
     }
@@ -93,6 +99,10 @@ class VcmpFrame {
         }
         else {
             var contents = type.name() + "#" + id;
+            if (type == Type.AUT) {
+                // The payload of an AUT frame is a credential: never let it reach a log.
+                return contents + (payload != null ? ":<redacted>" : "");
+            }
             if (payload != null) {
                 contents += ":" + (payload.length() > 36 ? payload.substring(0, 36) + "..." : payload);
             }

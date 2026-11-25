@@ -92,4 +92,25 @@ class VcmpFrameTest {
         val frame = VcmpFrame.createNak("123456789012", null).serialize();
         assertThat(frame).isEqualTo("NAK123456789012");
     }
+
+    @Test
+    void canParseAuthenticate() {
+        val frame = VcmpFrame.parse("AUT123456789012{\"token\":\"secret\"}");
+        assertThat(frame.getType()).isEqualTo(VcmpFrame.Type.AUT);
+        assertThat(frame.getId()).isEqualTo("123456789012");
+        assertThat(frame.getPayload()).isEqualTo("{\"token\":\"secret\"}");
+    }
+
+    @Test
+    void canSerializeAuthenticate() {
+        val frame = VcmpFrame.createAuthenticate("{\"token\":\"secret\"}");
+        assertThat(frame.getId()).hasSize(12);
+        assertThat(frame.serialize()).isEqualTo("AUT" + frame.getId() + "{\"token\":\"secret\"}");
+    }
+
+    @Test
+    void authenticatePayloadIsRedactedInToString() {
+        val frame = VcmpFrame.parse("AUT123456789012{\"token\":\"secret\"}");
+        assertThat(frame.toString()).doesNotContain("secret").contains("AUT#123456789012");
+    }
 }

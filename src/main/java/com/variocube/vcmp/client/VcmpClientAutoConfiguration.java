@@ -34,6 +34,11 @@ public class VcmpClientAutoConfiguration {
             manager.setReconnectTimeoutMin(Duration.ofSeconds(vcmpClient.reconnectMinSeconds()));
             manager.setReconnectTimeoutMax(Duration.ofSeconds(vcmpClient.reconnectMaxSeconds()));
             manager.setDisconnectTimeout(Duration.ofSeconds(vcmpClient.disconnectSeconds()));
+            manager.setAuthTimeout(Duration.ofMillis(vcmpClient.authTimeoutMillis()));
+            manager.setAuthRefreshRetryInterval(Duration.ofMillis(vcmpClient.authRefreshRetryMillis()));
+            if (vcmpClient.authRefreshLeadMillis() >= 0) {
+                manager.setAuthRefreshLeadTime(Duration.ofMillis(vcmpClient.authRefreshLeadMillis()));
+            }
             managers.add(manager);
         }
     }

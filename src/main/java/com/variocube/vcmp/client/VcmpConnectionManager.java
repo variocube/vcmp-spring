@@ -1,7 +1,9 @@
 package com.variocube.vcmp.client;
 
+import com.variocube.vcmp.ClassUtils;
 import com.variocube.vcmp.Executor;
 import com.variocube.vcmp.MethodAnnotationUtils;
+import com.variocube.vcmp.VcmpClientAuthentication;
 import com.variocube.vcmp.VcmpHandler;
 import jakarta.websocket.WebSocketContainer;
 import lombok.Getter;
@@ -10,6 +12,9 @@ import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 import org.apache.tomcat.websocket.Constants;
 import org.apache.tomcat.websocket.WsWebSocketContainer;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
@@ -18,10 +23,15 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -103,17 +113,83 @@ public class VcmpConnectionManager implements Closeable {
     @Setter
     private Duration disconnectTimeout = DEFAULT_DISCONNECT_TIMEOUT;
 
+    /**
+     * With a {@link VcmpCredential}: how long to wait for the server's answer to an {@code AUT}.
+     */
+    @Getter
+    private Duration authTimeout = VcmpClientAuthentication.DEFAULT_ANSWER_TIMEOUT;
+
+    /**
+     * With a {@link VcmpCredential}: how long before the authentication expires to re-authenticate; {@code null} (the
+     * default) for {@code min(60 s, 20 % of expiresIn)}.
+     */
+    @Getter
+    private Duration authRefreshLeadTime;
+
+    /**
+     * With a {@link VcmpCredential}: how long to wait before retrying a refresh answered with {@code NAK}, until the
+     * expiry. A refresh without an answer closes the session, which then reconnects.
+     */
+    @Getter
+    private Duration authRefreshRetryInterval = VcmpClientAuthentication.DEFAULT_REFRESH_RETRY_INTERVAL;
+
+    /**
+     * @throws IllegalArgumentException below 1 s.
+     */
+    public void setAuthTimeout(Duration authTimeout) {
+        VcmpClientAuthentication.requireAtLeastMinInterval("authTimeout", authTimeout);
+        this.authTimeout = authTimeout;
+    }
+
+    /**
+     * @throws IllegalArgumentException if negative.
+     */
+    public void setAuthRefreshLeadTime(Duration authRefreshLeadTime) {
+        if (authRefreshLeadTime != null && authRefreshLeadTime.isNegative()) {
+            throw new IllegalArgumentException("authRefreshLeadTime must not be negative.");
+        }
+        this.authRefreshLeadTime = authRefreshLeadTime;
+    }
+
+    /**
+     * @throws IllegalArgumentException below 1 s.
+     */
+    public void setAuthRefreshRetryInterval(Duration authRefreshRetryInterval) {
+        VcmpClientAuthentication.requireAtLeastMinInterval("authRefreshRetryInterval", authRefreshRetryInterval);
+        this.authRefreshRetryInterval = authRefreshRetryInterval;
+    }
+
+    /** The target's {@link VcmpCredential} method, or {@code null} if the client does not authenticate with AUT. */
+    private final Method credentialMethod;
+
+    private final List<Method> authenticationFailedMethods = new ArrayList<>();
+
 
     private WebSocketSession webSocketSession;
 
+    /**
+     * The last error connecting, incl. a failed session authentication (an {@code ErrorResponseException} with the
+     * problem); {@code null} once connected (with a {@link VcmpCredential}: once (re)authenticated).
+     */
     @Getter
-    private Throwable connectionError;
+    private volatile Throwable connectionError;
 
     private boolean isRunning = false;
 
 
     public VcmpConnectionManager(Object target, String uriTemplate, Object... uriVariables) {
         this.target = target;
+        this.credentialMethod = findCredentialMethod(target);
+        for (Method method : ClassUtils.getTargetClass(target).getMethods()) {
+            if (method.isAnnotationPresent(VcmpAuthenticationFailed.class)) {
+                if (method.getParameterCount() > 1 || (method.getParameterCount() == 1
+                        && !method.getParameterTypes()[0].isAssignableFrom(ProblemDetail.class))) {
+                    throw new IllegalStateException("@VcmpAuthenticationFailed " + method.getName()
+                            + " may only take a ProblemDetail.");
+                }
+                authenticationFailedMethods.add(method);
+            }
+        }
         this.uri = UriComponentsBuilder.fromUriString(uriTemplate).buildAndExpand(uriVariables).encode().toUri();
         this.vcmpHandler = new VcmpHandler(target);
         this.vcmpHandler.setDisconnectHandler(this::handleDisconnect);
@@ -133,8 +209,63 @@ public class VcmpConnectionManager implements Closeable {
         return headers;
     }
 
+    private static Method findCredentialMethod(Object target) {
+        Method found = null;
+        for (Method method : ClassUtils.getTargetClass(target).getMethods()) {
+            if (method.isAnnotationPresent(VcmpCredential.class)) {
+                if (found != null) {
+                    throw new IllegalStateException("More than one @VcmpCredential method.");
+                }
+                if (method.getParameterCount() != 0 || method.getReturnType() == void.class) {
+                    throw new IllegalStateException("@VcmpCredential " + method.getName()
+                            + " must take no parameters and return the credential.");
+                }
+                found = method;
+            }
+        }
+        return found;
+    }
+
+    private CompletionStage<?> supplyCredential() {
+        try {
+            val credential = credentialMethod.invoke(target);
+            return credential instanceof CompletionStage<?> stage ? stage : CompletableFuture.completedFuture(credential);
+        }
+        catch (InvocationTargetException e) {
+            return CompletableFuture.failedFuture(e.getCause());
+        }
+        catch (IllegalAccessException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
+    private void authenticationFailed(ProblemDetail problemDetail) {
+        val status = problemDetail.getStatus() >= 100 && problemDetail.getStatus() <= 999
+                ? HttpStatusCode.valueOf(problemDetail.getStatus())
+                : HttpStatusCode.valueOf(500);
+        connectionError = new ErrorResponseException(status, problemDetail, null);
+        for (Method method : authenticationFailedMethods) {
+            try {
+                if (method.getParameterCount() == 1) {
+                    method.invoke(target, problemDetail);
+                }
+                else {
+                    method.invoke(target);
+                }
+            }
+            catch (InvocationTargetException | IllegalAccessException | RuntimeException e) {
+                log.error("Error in @VcmpAuthenticationFailed method {}", method.getName(), e);
+            }
+        }
+    }
+
     public void start() {
         log.info("Starting connection to {}", this.uri);
+        if (credentialMethod != null) {
+            vcmpHandler.setClientAuthentication(new VcmpClientAuthentication(this::supplyCredential, authTimeout,
+                    authRefreshLeadTime, authRefreshRetryInterval, this::authenticationFailed,
+                    () -> connectionError = null));
+        }
         synchronized (this.lifecycleMonitor) {
             this.isRunning = true;
             openSession();
