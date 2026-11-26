@@ -163,7 +163,7 @@ class AutClientTest extends VcmpTestBase {
         assertThat(client.session().isAuthenticated()).isTrue();
         client.send(new Hello("after ack")).await();
 
-        val ackAt = fake.firstAckAt.values().iterator().next();
+        val ackAt = fake.firstAckAt.get(fake.sessions.get(0));
         assertThat(fake.framesOf("MSG")).hasSize(1)
                 .allMatch(frame -> frame.at() >= ackAt && frame.payload().contains("after ack"));
         assertThat(client.connectedCalls.get()).isEqualTo(1);

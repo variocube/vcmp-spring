@@ -78,6 +78,20 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
         return run;
     }
 
+    /** Records (current run only) when the first ACK to an AUT of the session was sent. */
+    private void recordFirstAck(WebSocketSession session) {
+        if (isCurrentRun(session)) {
+            firstAckAt.putIfAbsent(session.getId(), System.currentTimeMillis());
+        }
+    }
+
+    /** Records (current run only) when the fake server itself closed the session. */
+    private void recordServerClose(WebSocketSession session) {
+        if (isCurrentRun(session)) {
+            closedByServerAt.put(session.getId(), System.currentTimeMillis());
+        }
+    }
+
     private boolean isCurrentRun(WebSocketSession session) {
         var query = UriComponentsBuilder.fromUri(session.getUri()).build().getQueryParams();
         return run != null && run.equals(query.getFirst("run"));
@@ -144,7 +158,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                             send(session, "MSGpush00000001{\"@type\":\"aut:Hello\",\"text\":\"before ack\"}");
                         }
                         CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS).execute(() -> {
-                            firstAckAt.putIfAbsent(session.getId(), System.currentTimeMillis());
+                            recordFirstAck(session);
                             String rawAck = MALFORMED_ACKS.get(String.valueOf(query.getFirst("malformed")));
                             send(session, "ACK" + id + (rawAck != null ? rawAck : expiresIn != null
                                     ? "{\"expiresIn\":" + expiresIn + ",\"who\":\"fake\"}"
@@ -159,7 +173,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                     }
                     case "refresh-close" -> {
                         if (first) {
-                            firstAckAt.put(session.getId(), System.currentTimeMillis());
+                            recordFirstAck(session);
                             send(session, "ACK" + id + "{\"expiresIn\":" + expiresIn + "}");
                         }
                         else {
@@ -168,11 +182,11 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                     }
                     case "refresh-nak", "refresh-silent" -> {
                         if (first) {
-                            firstAckAt.put(session.getId(), System.currentTimeMillis());
+                            recordFirstAck(session);
                             send(session, "ACK" + id + "{\"expiresIn\":" + expiresIn + "}");
                             CompletableFuture.delayedExecutor(Long.parseLong(expiresIn), TimeUnit.MILLISECONDS)
                                     .execute(() -> {
-                                        closedByServerAt.put(session.getId(), System.currentTimeMillis());
+                                        recordServerClose(session);
                                         close(session);
                                     });
                         }
@@ -188,7 +202,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                             send(session, "NAK" + id + "{\"status\":401,\"title\":\"Authentication failed\"}");
                         }
                         else {
-                            firstAckAt.putIfAbsent(session.getId(), System.currentTimeMillis());
+                            recordFirstAck(session);
                             send(session, "ACK" + id + "{\"expiresIn\":" + expiresIn + "}");
                         }
                     }
