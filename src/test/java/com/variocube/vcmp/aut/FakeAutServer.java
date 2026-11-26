@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
  *     (1008) at the expiry;</li>
  *     <li>{@code refresh-silent}: ACKs the first AUT with {@code expiresIn}, never answers a later one, and closes
  *     (1008) at the expiry;</li>
+ *     <li>{@code close}: closes the session on the AUT, without an answer;</li>
+ *     <li>{@code refresh-close}: ACKs the first AUT with {@code expiresIn}, closes the session on a later one;</li>
  *     <li>{@code refresh-nak-once}: ACKs every AUT with {@code expiresIn}, except the second, which is NAKed with
  *     401.</li>
  * </ul>
@@ -66,6 +68,21 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
         registry.addHandler(this, "/fake/*");
     }
 
+    /** The current test run: only sessions whose URL has {@code run=<this>} are recorded. */
+    private volatile String run;
+
+    /** Clears the records and starts a new run; returns its id, for the {@code run} query parameter. */
+    public String startRun() {
+        run = java.util.UUID.randomUUID().toString().substring(0, 8);
+        clear();
+        return run;
+    }
+
+    private boolean isCurrentRun(WebSocketSession session) {
+        var query = UriComponentsBuilder.fromUri(session.getUri()).build().getQueryParams();
+        return run != null && run.equals(query.getFirst("run"));
+    }
+
     public void clear() {
         frames.clear();
         sessions.clear();
@@ -82,11 +99,16 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        sessions.add(session.getId());
+        if (isCurrentRun(session)) {
+            sessions.add(session.getId());
+        }
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        if (!isCurrentRun(session)) {
+            return;
+        }
         closeCodes.put(session.getId(), status.getCode());
         if (status.getReason() != null) {
             closeReasons.put(session.getId(), status.getReason());
@@ -100,7 +122,9 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
         String type = raw.substring(0, 3);
         String id = type.equals("HBT") ? null : raw.substring(3, 15);
         String payload = type.equals("HBT") || raw.length() <= 15 ? null : raw.substring(15);
-        frames.add(new Frame(session.getId(), System.currentTimeMillis(), type, id, payload));
+        if (isCurrentRun(session)) {
+            frames.add(new Frame(session.getId(), System.currentTimeMillis(), type, id, payload));
+        }
 
         var query = UriComponentsBuilder.fromUri(session.getUri()).build().getQueryParams();
         String mode = session.getUri().getPath().substring("/fake/".length());
@@ -114,6 +138,7 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                 switch (mode) {
                     case "silent" -> {
                     }
+                    case "close" -> close(session);
                     case "ack" -> {
                         if (first && query.getFirst("push") != null) {
                             send(session, "MSGpush00000001{\"@type\":\"aut:Hello\",\"text\":\"before ack\"}");
@@ -129,6 +154,15 @@ public class FakeAutServer extends TextWebSocketHandler implements WebSocketConf
                     case "nak" -> {
                         send(session, "NAK" + id + "{\"status\":" + nakStatus + ",\"title\":\"Authentication failed\"}");
                         if (query.getFirst("keep") == null) {
+                            close(session);
+                        }
+                    }
+                    case "refresh-close" -> {
+                        if (first) {
+                            firstAckAt.put(session.getId(), System.currentTimeMillis());
+                            send(session, "ACK" + id + "{\"expiresIn\":" + expiresIn + "}");
+                        }
+                        else {
                             close(session);
                         }
                     }

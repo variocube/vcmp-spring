@@ -136,41 +136,65 @@ tell when the last old client is gone and remove the handshake authenticator.
 @VcmpClient(url = "${center.url}/vcmp")
 public class CenterClient extends BasicVcmpClient {
 
-    @VcmpCredential   // called on every (re)connect and before the expiry; may return a CompletionStage
+    @VcmpCredential   // called on every (re)connect and every reauthenticate(); may return a CompletionStage
     public Map<String, String> credential() {
-        return Map.of("bearer", tokenService.fetchAccessToken());
+        return Map.of("bearer", tokenService.currentAccessToken());
     }
 
     @VcmpAuthenticationFailed   // optional
     public void authenticationFailed(ProblemDetail problem) {
         log.warn("VCMP authentication failed: {}", problem);
     }
+
+    @EventListener   // the application's own "token refreshed" event
+    public void tokenRefreshed(AccessTokenRefreshed event) {
+        reauthenticate();   // CompletableFuture<Map<String, Object>>: the ACK payload, or the error
+    }
 }
 ```
 
 - With a `@VcmpCredential` method the client sends `AUT` first on every session; `@VcmpSessionConnected` (and so
   `BasicVcmpClient.isConnected()`) fires only after the `ACK`, and nothing else can be sent before it.
-- A `NAK`, no answer within `authTimeoutMillis` (default 10 s; e.g. an older server that doesn't know `AUT`), or a
-  failing credential method is an authentication error: `@VcmpAuthenticationFailed` is called (also
+- On connect (the first `AUT`), a `NAK`, no answer within `authTimeoutMillis` (default 10 s; e.g. an older server
+  that doesn't know `AUT`), or a failing credential method is an authentication error: `@VcmpAuthenticationFailed` is called (also
   `VcmpConnectionManager.getConnectionError()`, cleared on the next successful authentication), the client closes the
   session (4008) and reconnects under the normal rules, with a fresh credential. Close reasons: `authentication failed`
   for a `NAK` to the first `AUT` or a failing credential method, `authentication timeout` for no answer.
+- Statuses of the problem the application gets (`@VcmpAuthenticationFailed`, `reauthenticate()`), on connect and on a
+  re-authentication: a `NAK` passes the server's status through; problems detected by the client itself (never on the
+  wire) are **500** the credential method failed (or its credential is no JSON object), **504** it didn't complete or a
+  sent `AUT` got no answer within the answer timeout, **503** the session closed while the `AUT` was pending. The same
+  in vcmp-js and vcmp-rs.
 - The answer timeout starts when the credential is requested: a credential method whose `CompletionStage` never
-  completes ends like an unanswered `AUT`. `authTimeoutMillis` and `authRefreshRetryMillis` below 1 s are rejected at
-  startup (not clamped), as is a negative lead time.
+  completes ends like an unanswered `AUT`. An `authTimeoutMillis` below 1 s is rejected at startup (not clamped).
 - An `ACK` with a payload that is no JSON object counts as no payload, and an `expiresIn` that is no non-negative
-  integer as absent (a warning is logged): the session is authenticated, without a refresh; the server closes it when
-  it is due.
-- When the `ACK` carries `expiresIn`, the client re-authenticates `authRefreshLeadMillis` before it (default:
-  `min(60 s, 20 % of expiresIn)`; at most half of `expiresIn`, and never sooner than 1 s after the `ACK`), counted from
-  receipt so clock skew doesn't matter. A refresh answered with `NAK` is reported like any authentication error and retried every
-  `authRefreshRetryMillis` (default 5 s) until the expiry; after the expiry the server closes the session and the
-  client reconnects as usual. After a principal change the server closes the session right away, so there is nothing
-  to retry. A refresh without an answer within the answer timeout is reported too, but not retried on the session (a
-  second `AUT` while the first is pending would make the server close it): the client closes the session (4008) and
-  reconnects with a fresh credential.
-- `VcmpConnectionManager` has the same options as setters (`setAuthTimeout`, `setAuthRefreshLeadTime`,
-  `setAuthRefreshRetryInterval`).
+  integer as absent (a warning is logged): the session is authenticated; the server closes it when it is due.
+- **Re-authentication is triggered by the application; the client schedules nothing.** The `ACK`'s payload, incl.
+  `expiresIn`, is passed on (`VcmpSession.getAuthenticationDetails()` / `getAuthenticationExpiresAt()`), but no timer
+  is set from it. An application with an expiring credential already tracks it (keycloak, an OAuth client) and calls
+  `reauthenticate()` (on `BasicVcmpClient` or `VcmpConnectionManager`) from its token-refreshed callback: it asks the
+  `@VcmpCredential` method and sends one `AUT` on the open session. The returned
+  `CompletableFuture<Map<String, Object>>` completes with the `ACK`'s payload members, exceptionally with an
+  `ErrorResponseException` (also reported to `@VcmpAuthenticationFailed`), or with `null` if nothing was sent:
+  - `NAK` (any status): the session stays (the server keeps it until its old expiry); no automatic retry, call again
+    if you like. After a principal change the server closes the session.
+  - The credential method fails or doesn't complete within the answer timeout: nothing is sent, the session stays.
+  - A sent `AUT` without an answer within the answer timeout: the client closes the session (4008
+    `authentication timeout`) and reconnects with a fresh credential.
+  - Only one `AUT` is in flight: calls while one is pending (the first `AUT` or a re-authentication) are served
+    together by one further `AUT` after its answer, with a fresh credential.
+  - Without an authenticated session (not started, connecting, disconnected) nothing is sent and the future completes
+    with `null`: the next connect asks the credential method anyway.
+
+  An application that never re-authenticates loses the session at the expiry (the server closes it) and the client
+  reconnects with a fresh credential, as after any close.
+
+  The handlers (`@VcmpAuthenticationFailed`, `@VcmpSessionConnected`) and the futures' completions run on VCMP worker
+  threads, after the attempt is over (the future completes first, then the handler runs): a handler may call
+  `reauthenticate()` and even block on it (`.join()`). A
+  failure handler that calls it again on every failure re-authenticates back to back; add a delay if you retry
+  there. `reauthenticate()` also works on a client bean that is an AOP proxy (`@Async`, `@Transactional`).
+- `VcmpConnectionManager` has the option as a setter (`setAuthTimeout`).
 
 ## Type aliases
 

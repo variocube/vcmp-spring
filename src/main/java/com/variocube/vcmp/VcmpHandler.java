@@ -125,6 +125,16 @@ public final class VcmpHandler implements WebSocketHandler {
                 : null;
     }
 
+    /**
+     * Client: re-authenticates the current session with a fresh credential; see
+     * {@code VcmpConnectionManager.reauthenticate()}. Completes with {@code null} without a client authentication
+     * (not started).
+     */
+    public CompletableFuture<Map<String, Object>> reauthenticate() {
+        val authenticator = this.clientAuthenticator;
+        return authenticator != null ? authenticator.reauthenticate() : CompletableFuture.completedFuture(null);
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket session opened: {}", session.getId());
@@ -185,6 +195,10 @@ public final class VcmpHandler implements WebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
         log.info("WebSocket session {} closed: {}", session.getId(), closeStatus);
         val vcmpSession = sessions.remove(session.getId());
+        if (vcmpSession != null && clientAuthenticator != null) {
+            // A pending AUT (first or re-authentication) is never answered now: end it with 503 at once.
+            clientAuthenticator.sessionClosed(vcmpSession);
+        }
         if (vcmpSession != null) {
             // Notify senders and chained ACKs that their callbacks will never be acknowledged.
             // Handled asynchronously like every other handler dispatch: a chained NAK sends a

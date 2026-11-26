@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 import org.apache.tomcat.websocket.Constants;
 import org.apache.tomcat.websocket.WsWebSocketContainer;
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.ErrorResponseException;
@@ -29,6 +31,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -114,49 +117,50 @@ public class VcmpConnectionManager implements Closeable {
     private Duration disconnectTimeout = DEFAULT_DISCONNECT_TIMEOUT;
 
     /**
-     * With a {@link VcmpCredential}: how long to wait for the server's answer to an {@code AUT}.
+     * With a {@link VcmpCredential}: how long an authentication attempt may take, from requesting the credential to the
+     * server's answer to the {@code AUT}.
      */
     @Getter
     private Duration authTimeout = VcmpClientAuthentication.DEFAULT_ANSWER_TIMEOUT;
 
     /**
-     * With a {@link VcmpCredential}: how long before the authentication expires to re-authenticate; {@code null} (the
-     * default) for {@code min(60 s, 20 % of expiresIn)}.
-     */
-    @Getter
-    private Duration authRefreshLeadTime;
-
-    /**
-     * With a {@link VcmpCredential}: how long to wait before retrying a refresh answered with {@code NAK}, until the
-     * expiry. A refresh without an answer closes the session, which then reconnects.
-     */
-    @Getter
-    private Duration authRefreshRetryInterval = VcmpClientAuthentication.DEFAULT_REFRESH_RETRY_INTERVAL;
-
-    /**
      * @throws IllegalArgumentException below 1 s.
      */
     public void setAuthTimeout(Duration authTimeout) {
-        VcmpClientAuthentication.requireAtLeastMinInterval("authTimeout", authTimeout);
+        VcmpClientAuthentication.requireValidAnswerTimeout(authTimeout);
         this.authTimeout = authTimeout;
     }
 
     /**
-     * @throws IllegalArgumentException if negative.
+     * Re-authenticates the current session: asks the {@link VcmpCredential} method for a fresh credential and sends it
+     * in one {@code AUT} on the open session. The client schedules no re-authentication itself: call this when the
+     * credential has been refreshed (e.g. from a token-refreshed callback), before the session's authentication
+     * expires ({@code VcmpSession.getAuthenticationExpiresAt()}); otherwise the server closes the session at the
+     * expiry and the client reconnects with a fresh credential.
+     * <p>
+     * The future completes
+     * <ul>
+     *     <li>with the members of the server's {@code ACK} payload (incl. {@code expiresIn}; empty if it has
+     *     none);</li>
+     *     <li>exceptionally with an {@code ErrorResponseException} carrying the problem, which is also reported to the
+     *     {@link VcmpAuthenticationFailed} methods: a {@code NAK} (the server's status) or a credential method that
+     *     failed (500) or did not complete within the answer timeout (504) keeps the session (nothing is retried; call
+     *     again if you like); an {@code AUT} without an answer within the answer timeout (504) closes the session
+     *     (4008), which reconnects; the session closing while the {@code AUT} is pending is a 503;</li>
+     *     <li>with {@code null} if nothing was sent because there is no authenticated session (not started,
+     *     connecting, disconnected): the next connect asks the credential method anyway.</li>
+     * </ul>
+     * Only one {@code AUT} is in flight at a time: calls while one is pending (the first {@code AUT} or a
+     * re-authentication) are served together by one further {@code AUT} after its answer, with a fresh credential.
+     *
+     * @throws IllegalStateException (in the future) if the client has no {@link VcmpCredential} method.
      */
-    public void setAuthRefreshLeadTime(Duration authRefreshLeadTime) {
-        if (authRefreshLeadTime != null && authRefreshLeadTime.isNegative()) {
-            throw new IllegalArgumentException("authRefreshLeadTime must not be negative.");
+    public CompletableFuture<Map<String, Object>> reauthenticate() {
+        if (credentialMethod == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("The client has no @VcmpCredential method."));
         }
-        this.authRefreshLeadTime = authRefreshLeadTime;
-    }
-
-    /**
-     * @throws IllegalArgumentException below 1 s.
-     */
-    public void setAuthRefreshRetryInterval(Duration authRefreshRetryInterval) {
-        VcmpClientAuthentication.requireAtLeastMinInterval("authRefreshRetryInterval", authRefreshRetryInterval);
-        this.authRefreshRetryInterval = authRefreshRetryInterval;
+        return vcmpHandler.reauthenticate();
     }
 
     /** The target's {@link VcmpCredential} method, or {@code null} if the client does not authenticate with AUT. */
@@ -180,6 +184,7 @@ public class VcmpConnectionManager implements Closeable {
     public VcmpConnectionManager(Object target, String uriTemplate, Object... uriVariables) {
         this.target = target;
         this.credentialMethod = findCredentialMethod(target);
+        registerOn(target);
         for (Method method : ClassUtils.getTargetClass(target).getMethods()) {
             if (method.isAnnotationPresent(VcmpAuthenticationFailed.class)) {
                 if (method.getParameterCount() > 1 || (method.getParameterCount() == 1
@@ -207,6 +212,23 @@ public class VcmpConnectionManager implements Closeable {
         headers.put(WebSocketHttpHeaders.SEC_WEBSOCKET_EXTENSIONS, Collections.singletonList("permessage-deflate"));
         MethodAnnotationUtils.invokeMethodWithAnnotation(target, VcmpHttpHeaders.class, headers);
         return headers;
+    }
+
+    /**
+     * Lets a {@link BasicVcmpClient} target reach this manager for {@link BasicVcmpClient#reauthenticate()}. A Spring
+     * bean may be an AOP proxy (e.g. for {@code @Async}, {@code @Transactional}): the proxy runs
+     * {@code reauthenticate()} on its target, so the manager is set on the target too.
+     */
+    private void registerOn(Object target) {
+        if (target instanceof BasicVcmpClient basicVcmpClient) {
+            basicVcmpClient.setConnectionManager(this);
+        }
+        if (AopUtils.isAopProxy(target)) {
+            val unwrapped = AopProxyUtils.getSingletonTarget(target);
+            if (unwrapped != null && unwrapped != target) {
+                registerOn(unwrapped);
+            }
+        }
     }
 
     private static Method findCredentialMethod(Object target) {
@@ -263,8 +285,7 @@ public class VcmpConnectionManager implements Closeable {
         log.info("Starting connection to {}", this.uri);
         if (credentialMethod != null) {
             vcmpHandler.setClientAuthentication(new VcmpClientAuthentication(this::supplyCredential, authTimeout,
-                    authRefreshLeadTime, authRefreshRetryInterval, this::authenticationFailed,
-                    () -> connectionError = null));
+                    this::authenticationFailed, () -> connectionError = null));
         }
         synchronized (this.lifecycleMonitor) {
             this.isRunning = true;

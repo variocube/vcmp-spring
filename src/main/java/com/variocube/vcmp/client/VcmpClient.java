@@ -34,17 +34,4 @@ public @interface VcmpClient {
      * server's answer to the {@code AUT}, in milliseconds; at least 1000.
      */
     long authTimeoutMillis() default 10_000;
-
-    /**
-     * With a {@link VcmpCredential}: how long before the authentication expires to re-authenticate, in milliseconds;
-     * negative (the default) for {@code min(60 s, 20 % of expiresIn)}.
-     */
-    long authRefreshLeadMillis() default -1;
-
-    /**
-     * With a {@link VcmpCredential}: how long to wait before retrying a refresh answered with {@code NAK}, in
-     * milliseconds (at least 1000); retried until the expiry. A refresh without an answer closes the session, which
-     * reconnects.
-     */
-    long authRefreshRetryMillis() default 5_000;
 }

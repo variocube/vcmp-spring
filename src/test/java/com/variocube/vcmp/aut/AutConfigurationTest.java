@@ -86,50 +86,11 @@ class AutConfigurationTest {
     }
 
     @Test
-    void defaultRefreshLeadTimeIsTheEarlierOf60SecondsAnd20Percent() {
-        val defaults = new VcmpClientAuthentication(() -> null, Duration.ofSeconds(10), null, null, problem -> {
-        }, null);
-        assertThat(defaults.refreshLeadTime()).isNull();
-        assertThat(defaults.refreshRetryInterval()).isEqualTo(Duration.ofSeconds(5));
-        assertThat(leadMillis(defaults, 1_000)).isEqualTo(200);
-        assertThat(leadMillis(defaults, 300_000)).isEqualTo(60_000);
-        assertThat(leadMillis(defaults, 3_600_000)).isEqualTo(60_000);
-
-        val configured = new VcmpClientAuthentication(() -> null, Duration.ofSeconds(10), Duration.ofSeconds(5), null,
-                problem -> {
-                }, null);
-        assertThat(leadMillis(configured, 1_000_000)).isEqualTo(5_000);
-    }
-
-    @Test
-    void refreshLeadIsAtMostHalfOfExpiresInAndARefreshComesNoSoonerThanOneSecondAfterTheAck() {
-        val defaults = new VcmpClientAuthentication(() -> null, Duration.ofSeconds(10), null, null, problem -> {
-        }, null);
-        assertThat(delayMillis(defaults, 2_000)).isEqualTo(1_600);
-        assertThat(delayMillis(defaults, 600_000)).isEqualTo(540_000);
-        assertThat(delayMillis(defaults, 1_000)).isEqualTo(1_000); // 800 would be sooner than 1 s
-        assertThat(delayMillis(defaults, 0)).isEqualTo(1_000);
-
-        val longLead = new VcmpClientAuthentication(() -> null, Duration.ofSeconds(10), Duration.ofSeconds(5), null,
-                problem -> {
-                }, null);
-        assertThatThrownBy(() -> new VcmpClientAuthentication(() -> null, Duration.ofMillis(999), null, null,
-                problem -> {
-                }, null)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new VcmpClientAuthentication(() -> null, Duration.ofSeconds(1), null,
-                Duration.ofMillis(999), problem -> {
-                }, null)).isInstanceOf(IllegalArgumentException.class);
-        assertThat(leadMillis(longLead, 4_000)).isEqualTo(2_000);
-        assertThat(delayMillis(longLead, 4_000)).isEqualTo(2_000);
-        assertThat(delayMillis(longLead, 100)).isEqualTo(1_000);
-    }
-
-    private static long delayMillis(VcmpClientAuthentication authentication, long expiresIn) {
-        return com.variocube.vcmp.VcmpClientAuthenticationAccess.refreshDelayMillis(authentication, expiresIn);
-    }
-
-    private static long leadMillis(VcmpClientAuthentication authentication, long expiresIn) {
-        return com.variocube.vcmp.VcmpClientAuthenticationAccess.refreshLeadMillis(authentication, expiresIn);
+    void answerTimeoutBelowOneSecondIsRejected() {
+        assertThatThrownBy(() -> new VcmpClientAuthentication(() -> null, Duration.ofMillis(999), problem -> {
+        }, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(new VcmpClientAuthentication(() -> null, Duration.ofSeconds(1), problem -> {
+        }, null).answerTimeout()).isEqualTo(Duration.ofSeconds(1));
     }
 
     private static void register(Object endpoint) {
