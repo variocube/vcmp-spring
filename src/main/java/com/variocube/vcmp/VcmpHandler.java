@@ -19,7 +19,9 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.time.Duration;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -62,6 +64,18 @@ public final class VcmpHandler implements WebSocketHandler {
     @Setter
     private Semaphore connectThrottle;
 
+    /** Server: authenticates the sessions of an endpoint that requires authentication; {@code null} otherwise. */
+    private ServerAuthenticator serverAuthenticator;
+
+    /** Client: authenticates the sessions of a client with a credential; {@code null} otherwise. */
+    private ClientAuthenticator clientAuthenticator;
+
+    /**
+     * The session attribute under which a handshake interceptor stores the endpoint path's URI template variables,
+     * passed to a {@link VcmpHandshakeAuthenticator} as {@link VcmpHandshake#pathVariables()}.
+     */
+    public static final String PATH_VARIABLES_ATTRIBUTE = VcmpHandler.class.getName() + ".pathVariables";
+
     public VcmpHandler(Object target) {
 
         this.target = target;
@@ -74,6 +88,53 @@ public final class VcmpHandler implements WebSocketHandler {
         registerAliases(this.listeners, messageReader);
     }
 
+    /**
+     * Server: requires every session to authenticate (session authentication, {@code AUT}) with the target's
+     * {@link VcmpAuthenticator}, or its {@link VcmpHandshakeAuthenticator}, within the given timeout.
+     *
+     * @throws IllegalStateException if the target has no valid {@link VcmpAuthenticator}.
+     */
+    public void requireAuthentication(Duration authTimeout) {
+        this.serverAuthenticator = new ServerAuthenticator(this, target, authTimeout, objectMapper);
+    }
+
+    /** Server: the authenticator of an endpoint requiring authentication, or {@code null}. For tests. */
+    ServerAuthenticator getServerAuthenticator() {
+        return serverAuthenticator;
+    }
+
+    /** Server: whether the endpoint has a {@link VcmpHandshakeAuthenticator}, which needs the path variables. */
+    public boolean hasHandshakeAuthenticator() {
+        return serverAuthenticator != null && serverAuthenticator.hasHandshakeAuthenticator();
+    }
+
+    /**
+     * Whether the target declares a {@link VcmpAuthenticator} or {@link VcmpHandshakeAuthenticator}. Such a target
+     * must {@link #requireAuthentication require authentication}, or it would silently accept any session.
+     */
+    public boolean declaresAuthenticator() {
+        val targetClass = ClassUtils.getTargetClass(target);
+        return ServerAuthenticator.findAnnotatedMethod(targetClass, VcmpAuthenticator.class) != null
+                || ServerAuthenticator.findAnnotatedMethod(targetClass, VcmpHandshakeAuthenticator.class) != null;
+    }
+
+    /** Client: authenticates every session with {@code AUT} before it is reported connected. */
+    public void setClientAuthentication(VcmpClientAuthentication clientAuthentication) {
+        this.clientAuthenticator = clientAuthentication != null
+                ? new ClientAuthenticator(this, clientAuthentication, objectMapper)
+                : null;
+    }
+
+    /**
+     * Client: re-authenticates the current session with a fresh credential; see
+     * {@code VcmpConnectionManager.reauthenticate()}. Completes with {@code null} without a client authentication
+     * (not started).
+     */
+    public CompletableFuture<Map<String, Object>> reauthenticate() {
+        val authenticator = this.clientAuthenticator;
+        return authenticator != null ? authenticator.reauthenticate() : CompletableFuture.completedFuture(null);
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket session opened: {}", session.getId());
@@ -81,29 +142,63 @@ public final class VcmpHandler implements WebSocketHandler {
         VcmpSession vcmpSession = new VcmpSession(session, this);
         sessions.put(session.getId(), vcmpSession);
 
-        Executor.getExecutor().submit(() -> {
-            val throttle = this.connectThrottle;
+        if (serverAuthenticator != null) {
+            // The connected hook fires only once the session is authenticated: by its handshake right away (transition
+            // mode), else after a successful AUT.
+            if (serverAuthenticator.sessionOpened(vcmpSession, handshakeOf(session))) {
+                Executor.getExecutor().submit(() -> runThrottled(() -> invokeConnected(vcmpSession)));
+            }
+            return;
+        }
+        if (clientAuthenticator != null) {
+            clientAuthenticator.sessionOpened(vcmpSession);
+            return;
+        }
+        vcmpSession.getAuthentication().markConnectedWithoutAuthentication();
+        Executor.getExecutor().submit(() -> runThrottled(() -> invokeConnected(vcmpSession)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static VcmpHandshake handshakeOf(WebSocketSession session) {
+        val pathVariables = session.getAttributes().get(PATH_VARIABLES_ATTRIBUTE);
+        return new VcmpHandshake(session.getUri(), session.getHandshakeHeaders(),
+                pathVariables instanceof Map<?, ?> map ? Map.copyOf((Map<String, String>) map) : Map.of(),
+                session.getPrincipal());
+    }
+
+    /** Runs connect-time work under the connect throttle, if any. */
+    void runThrottled(Runnable runnable) {
+        val throttle = this.connectThrottle;
+        if (throttle != null) {
+            throttle.acquireUninterruptibly();
+        }
+        try {
+            runnable.run();
+        }
+        finally {
             if (throttle != null) {
-                throttle.acquireUninterruptibly();
+                throttle.release();
             }
-            try {
-                MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionConnected.class, vcmpSession);
-            }
-            catch (Exception e) {
-                log.error("Could not invoke connect handler", e);
-            }
-            finally {
-                if (throttle != null) {
-                    throttle.release();
-                }
-            }
-        });
+        }
+    }
+
+    void invokeConnected(VcmpSession vcmpSession) {
+        try {
+            MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionConnected.class, vcmpSession);
+        }
+        catch (Exception e) {
+            log.error("Could not invoke connect handler", e);
+        }
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
         log.info("WebSocket session {} closed: {}", session.getId(), closeStatus);
         val vcmpSession = sessions.remove(session.getId());
+        if (vcmpSession != null && clientAuthenticator != null) {
+            // A pending AUT (first or re-authentication) is never answered now: end it with 503 at once.
+            clientAuthenticator.sessionClosed(vcmpSession);
+        }
         if (vcmpSession != null) {
             // Notify senders and chained ACKs that their callbacks will never be acknowledged.
             // Handled asynchronously like every other handler dispatch: a chained NAK sends a
@@ -111,11 +206,16 @@ public final class VcmpHandler implements WebSocketHandler {
             // NAK handlers may block arbitrarily - neither may hold the container's I/O thread.
             Executor.getExecutor().submit(vcmpSession::failPendingCallbacks);
         }
-        try {
-            MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionDisconnected.class, vcmpSession);
-        }
-        catch (Exception e) {
-            log.error("Could not invoke disconnect handler", e);
+        // Only sessions that were connected in the application's sense: one that never authenticated was never
+        // reported connected, so the application has nothing to unregister.
+        if (vcmpSession == null || vcmpSession.getAuthentication().isConnected()) {
+            try {
+                MethodAnnotationUtils.invokeMethodWithAnnotation(this.target, VcmpSessionDisconnected.class,
+                        vcmpSession);
+            }
+            catch (Exception e) {
+                log.error("Could not invoke disconnect handler", e);
+            }
         }
 
         // Call disconnect handler
@@ -127,7 +227,8 @@ public final class VcmpHandler implements WebSocketHandler {
     @Override
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
         if (log.isTraceEnabled()) {
-            log.trace("Handling message {}", message);
+            // Only the length: the message may be (part of) an AUT frame, whose payload is a credential.
+            log.trace("Handling {} of {} bytes", message.getClass().getSimpleName(), message.getPayloadLength());
         }
 
         VcmpSession vcmpSession = getSession(session);
@@ -136,6 +237,11 @@ public final class VcmpHandler implements WebSocketHandler {
                 handleTextMessage(vcmpSession, textMessage);
             }
             else if (message instanceof BinaryMessage) {
+                if (serverAuthenticator != null && !vcmpSession.getAuthentication().admitsMessagesAfterCommit()) {
+                    // Before authentication only HBT and AUT are accepted; a binary message is neither.
+                    vcmpSession.closeForPolicyViolation(ServerAuthenticator.REASON_REQUIRED);
+                    return;
+                }
                 log.warn("Received binary message. This is unsupported.");
             }
             else if (message instanceof PongMessage) {
@@ -172,7 +278,49 @@ public final class VcmpHandler implements WebSocketHandler {
     }
 
     private void handlePayload(VcmpSession session, String payload) {
-        VcmpFrame frame = VcmpFrame.parse(payload);
+        VcmpFrame frame;
+        try {
+            frame = VcmpFrame.parse(payload);
+        }
+        catch (RuntimeException e) {
+            if (serverAuthenticator != null && !session.getAuthentication().admitsMessagesAfterCommit()) {
+                session.closeForPolicyViolation(ServerAuthenticator.REASON_REQUIRED);
+                return;
+            }
+            throw e;
+        }
+
+        // Decided here, on the receiving thread, so that the authentication rules see the frames in their order.
+        if (frame.getType() == VcmpFrame.Type.AUT) {
+            if (serverAuthenticator != null) {
+                serverAuthenticator.handleAut(session, frame);
+            }
+            else {
+                log.info("Received AUT in session {}, which does not use authentication.", session.getId());
+                Executor.getExecutor().submit(() -> nak(session, frame.getId(), ServerAuthenticator.problem(
+                        HttpStatus.BAD_REQUEST, "Authentication not supported",
+                        "This endpoint does not use session authentication.")));
+            }
+            return;
+        }
+        if (serverAuthenticator != null && frame.getType() != VcmpFrame.Type.HBT
+                && !session.getAuthentication().admitsMessagesAfterCommit()) {
+            // Before authentication, only HBT and AUT are accepted.
+            session.closeForPolicyViolation(ServerAuthenticator.REASON_REQUIRED);
+            return;
+        }
+        if (clientAuthenticator != null && session.isAuthenticationFrame(frame.getId())) {
+            // The answer to our AUT: settled here, in order (see VcmpSession#isAuthenticationFrame). Its handlers
+            // only change the session's state and hand everything else to the worker pool.
+            if (frame.getType() == VcmpFrame.Type.ACK) {
+                session.notifyAck(frame.getId(), frame.getPayload());
+                return;
+            }
+            if (frame.getType() == VcmpFrame.Type.NAK) {
+                session.notifyNak(frame.getId(), parseProblemDetail(frame.getPayload()));
+                return;
+            }
+        }
 
         // Handle it asynchronously from here,
         // so that a handler cannot block the receiver thread.
@@ -191,6 +339,9 @@ public final class VcmpHandler implements WebSocketHandler {
                     break;
                 case HBT:
                     session.handleHeartbeatReceived(frame);
+                    break;
+                case AUT:
+                    // Handled above, never dispatched.
                     break;
             }
         });
@@ -260,7 +411,7 @@ public final class VcmpHandler implements WebSocketHandler {
         }
     }
 
-    private void nak(VcmpSession session, String messageId, ProblemDetail problemDetail) {
+    void nak(VcmpSession session, String messageId, ProblemDetail problemDetail) {
         if (session.isOpen()) {
             if (log.isTraceEnabled()) {
                 log.trace("Sending NAK for message {} with error {}", messageId, problemDetail);
@@ -278,7 +429,7 @@ public final class VcmpHandler implements WebSocketHandler {
         }
     }
 
-    private void ack(VcmpSession session, String messageId, Object result) {
+    void ack(VcmpSession session, String messageId, Object result) {
         if (session.isOpen()) {
             if (log.isTraceEnabled()) {
                 log.trace("Sending ACK for message: {}", messageId);
@@ -421,7 +572,7 @@ public final class VcmpHandler implements WebSocketHandler {
      * buried in a generic wrapper cannot hijack the status. The future wrappers are stripped by
      * {@link #unwrap} beforehand.
      */
-    private static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
+    static ProblemDetail resolveDeliberateStatus(Throwable throwable) {
         if (throwable instanceof ErrorResponseException errorResponseException) {
             return errorResponseException.getBody();
         }

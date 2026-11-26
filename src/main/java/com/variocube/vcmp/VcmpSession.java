@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.socket.CloseStatus;
@@ -16,6 +17,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.security.Principal;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,11 +57,34 @@ public class VcmpSession {
     @Getter(AccessLevel.PACKAGE)
     private final MessageBuffer messageBuffer = new MessageBuffer();
 
+    @Getter(AccessLevel.PACKAGE)
+    private final SessionAuthentication authentication = new SessionAuthentication();
+
+    /**
+     * Client: the id of the last AUT frame sent. Its ACK or NAK is settled on the receiving thread, in order with the
+     * frames around it: before a NAK-and-close's close fails it as "Session closed", and before a MSG that follows the
+     * ACK is dispatched.
+     */
+    private volatile String authenticationFrameId;
+
+    boolean isAuthenticationFrame(String id) {
+        return id != null && id.equals(authenticationFrameId);
+    }
+
     public VcmpCallback<Void> send(VcmpMessage message) {
         return send(message, Void.class);
     }
 
     public <T> VcmpCallback<T> send(VcmpMessage message, Class<T> resultClass) {
+        if (!authentication.admitsMessages() && isOpen()) {
+            // Never send a message on a session that requires authentication before it has authenticated: neither
+            // a server push (session pool, broadcast) to an unauthenticated client, nor a client message before
+            // the server's ACK to its AUT.
+            val problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Cannot send message: the session is not authenticated.");
+            problemDetail.setTitle("Not authenticated");
+            return VcmpCallback.failed(LocalConnectionProblem.mark(problemDetail));
+        }
         VcmpFrame vcmpFrame;
         try {
             vcmpFrame = VcmpFrame.createMessage(vcmpHandler.serializeMessage(message));
@@ -100,6 +125,64 @@ public class VcmpSession {
             return VcmpCallback.failed(sendFailedProblemDetail(e));
         }
         return callback;
+    }
+
+    /**
+     * Client: sends an {@code AUT} frame. The callback is settled by the server's
+     * {@code ACK} (with its payload as JSON, or {@code null}) or {@code NAK}.
+     */
+    VcmpCallback<JsonNode> sendAuthenticate(VcmpFrame frame) {
+        val callback = new VcmpCallback<>(JsonNode.class);
+        callbacks.put(frame.getId(), callback);
+        authenticationFrameId = frame.getId();
+        try {
+            sendFrame(frame);
+        }
+        catch (IOException | RuntimeException e) {
+            callbacks.remove(frame.getId());
+            return VcmpCallback.failed(isOpen() ? sendFailedProblemDetail(e) : sessionClosedProblemDetail(
+                    "The session was closed while sending the credential."));
+        }
+        return callback;
+    }
+
+    /**
+     * Fails a pending callback (if it is still pending) with the given problem detail, e.g. on an answer timeout.
+     */
+    void failPendingCallback(String id, ProblemDetail problemDetail) {
+        notifyNak(id, problemDetail);
+    }
+
+    /**
+     * Close code of a <em>client</em> closing a session for authentication reasons. Browsers only let a client close
+     * with 1000 or 3000-4999, so all VCMP clients use 4008 ("1008 from a client"); peers treat it like 1008.
+     */
+    static final int CLIENT_POLICY_VIOLATION = 4008;
+
+    /**
+     * Server: closes the session with close code 1008 (policy violation) for an authentication rule. The reason is
+     * informative only.
+     */
+    void closeForPolicyViolation(String reason) {
+        close(CloseStatus.POLICY_VIOLATION.withReason(reason));
+    }
+
+    /** Client: closes the session with close code 4008 for an authentication reason (see {@link #CLIENT_POLICY_VIOLATION}). */
+    void closeForAuthenticationAsClient(String reason) {
+        close(new CloseStatus(CLIENT_POLICY_VIOLATION, reason));
+    }
+
+    private void close(CloseStatus closeStatus) {
+        authentication.close();
+        if (webSocketSession.isOpen()) {
+            log.info("Closing session {}: {} ({})", getId(), closeStatus.getReason(), closeStatus.getCode());
+            try {
+                webSocketSession.close(closeStatus);
+            }
+            catch (IOException | RuntimeException e) {
+                log.warn("Error closing session {}", getId(), e);
+            }
+        }
     }
 
     /**
@@ -260,7 +343,8 @@ public class VcmpSession {
                 log.trace("Acquired send lock. Start sending chunks...");
                 while (it.hasNext()) {
                     val message = new TextMessage(it.next(), !it.hasNext());
-                    log.trace("Sending chunk {}", message);
+                    // Only the length: a chunk may be part of an AUT frame, whose payload is a credential.
+                    log.trace("Sending chunk of {} bytes", message.getPayloadLength());
                     this.webSocketSession.sendMessage(message);
                 }
             }
@@ -304,6 +388,41 @@ public class VcmpSession {
         }
     }
 
+    /**
+     * Whether the session is authenticated by VCMP: on a server, by the endpoint's authenticator (handshake or
+     * {@code AUT}); on a client, by the server's {@code ACK} to its {@code AUT}. Always false for sessions of endpoints
+     * and clients that don't use VCMP authentication.
+     */
+    public boolean isAuthenticated() {
+        return authentication.isAuthenticated();
+    }
+
+    /**
+     * Whether the session requires VCMP authentication and has not authenticated yet. No message can be sent on such
+     * a session.
+     */
+    public boolean isAuthenticationPending() {
+        return authentication.isPending();
+    }
+
+    /**
+     * When the session's authentication expires: on a server, the authenticator's expiry; on a client, computed from
+     * the {@code expiresIn} of the last {@code ACK} on receipt. {@code null} if it does not expire or the session is
+     * not authenticated.
+     */
+    public Instant getAuthenticationExpiresAt() {
+        return authentication.getExpiresAt();
+    }
+
+    /**
+     * The endpoint-defined members of the authentication: on a server, the authenticator's
+     * {@link VcmpAuthentication#getDetails() details}; on a client, the members of the last {@code ACK} payload (incl.
+     * {@code expiresIn}). Empty if there are none or the session is not authenticated.
+     */
+    public Map<String, Object> getAuthenticationDetails() {
+        return authentication.getDetails();
+    }
+
     public String getUsername() {
         return getPrincipalName()
                 .orElse(null);
@@ -316,7 +435,7 @@ public class VcmpSession {
     }
 
     private Optional<String> getPrincipalName() {
-        return Optional.ofNullable(webSocketSession.getPrincipal())
+        return Optional.ofNullable(getPrincipal())
                 .map(Principal::getName);
     }
 
@@ -328,8 +447,13 @@ public class VcmpSession {
         return webSocketSession.getUri();
     }
 
+    /**
+     * The principal of the session: on an authenticated endpoint, the principal returned by its authenticator once the
+     * session is authenticated; otherwise the principal of the handshake request (e.g. from Spring Security), if any.
+     */
     public Principal getPrincipal() {
-        return webSocketSession.getPrincipal();
+        val principal = authentication.getPrincipal();
+        return principal != null ? principal : webSocketSession.getPrincipal();
     }
 
     public void close() throws IOException {

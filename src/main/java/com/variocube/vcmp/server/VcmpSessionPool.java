@@ -99,11 +99,13 @@ public class VcmpSessionPool {
     public boolean hasSession(String username) {
         return sessions.stream()
                 .filter(VcmpSession::isOpen)
+                .filter(session -> !session.isAuthenticationPending())
                 .anyMatch(session -> session.hasUsername(username));
     }
 
     /**
-     * Gets a list of open sessions in the pool.
+     * Gets a list of open sessions in the pool. A session that has to authenticate and has not yet is left out: no
+     * server-initiated message may reach it.
      * @return A list of open sessions.
      */
     public List<VcmpSession> getOpenSessions() {
@@ -113,7 +115,7 @@ public class VcmpSessionPool {
                 log.warn("Session was closed without removal from pool. Removing now: {}", session.getId());
                 sessions.remove(session);
             }
-            else {
+            else if (!session.isAuthenticationPending()) {
                 openSessions.add(session);
             }
         }

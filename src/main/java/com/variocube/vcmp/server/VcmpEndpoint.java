@@ -22,4 +22,20 @@ public @interface VcmpEndpoint {
     String value() default "";
 
     String path();
+
+    /**
+     * Requires every session to authenticate with an {@code AUT} frame (or, in transition mode, by its handshake)
+     * before anything else: the endpoint must have a {@link com.variocube.vcmp.VcmpAuthenticator} method and may have
+     * a {@link com.variocube.vcmp.VcmpHandshakeAuthenticator}. Until a session is authenticated, only {@code HBT} and
+     * {@code AUT} frames are accepted and {@code @VcmpSessionConnected} does not fire.
+     */
+    boolean authenticated() default false;
+
+    /**
+     * How long a session of an {@link #authenticated()} endpoint has to authenticate after connecting, in milliseconds,
+     * before it is closed (1008).
+     */
+    long authTimeoutMillis() default DEFAULT_AUTH_TIMEOUT_MILLIS;
+
+    long DEFAULT_AUTH_TIMEOUT_MILLIS = 10_000;
 }

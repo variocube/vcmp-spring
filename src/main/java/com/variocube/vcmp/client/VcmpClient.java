@@ -28,4 +28,10 @@ public @interface VcmpClient {
     long reconnectMaxSeconds() default VcmpConnectionManager.DEFAULT_RECONNECT_TIMEOUT_MAX_SECONDS;
 
     long disconnectSeconds() default VcmpConnectionManager.DEFAULT_DISCONNECT_TIMEOUT_SECONDS;
+
+    /**
+     * With a {@link VcmpCredential}: how long an authentication attempt may take, from requesting the credential to the
+     * server's answer to the {@code AUT}, in milliseconds; at least 1000.
+     */
+    long authTimeoutMillis() default 10_000;
 }
